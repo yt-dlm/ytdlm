@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ytdlm"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python SDK for ytdlm — Real-Time SABR UMP WebM/Opus Audio Streamer for Discord Bots"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
 authors = [
-  { name = "ytdlm", email = "341343882+ytdlm@users.noreply.github.com" }
+  { name = "yt-dlm" }
 ]
 keywords = ["audio", "streaming", "opus", "webm", "ump", "sabr", "discord", "music-bot"]
 classifiers = [
@@ -21,9 +21,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ytdlm/ytdlm"
-Repository = "https://github.com/ytdlm/ytdlm.git"
-Issues = "https://github.com/ytdlm/ytdlm/issues"
+Homepage = "https://github.com/yt-dlm/ytdlm"
+Repository = "https://github.com/yt-dlm/ytdlm.git"
+Issues = "https://github.com/yt-dlm/ytdlm/issues"
 
 [tool.setuptools]
 py-modules = ["ytdlm", "discord_py_bot"]

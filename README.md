@@ -43,6 +43,7 @@ Built specifically for **multi-guild Discord music bots**, **24/7 Lo-Fi / Radio 
 | **Account Safety (Anti-Ban)** | Risk of leaking cookies/tokens on standard `251` streams | **100% Isolated Anonymous Guest `TVHTML5`** with a rotating 16-session `visitorData` pool |
 | **24/7 Continuous Streaming (10h+ mixes)** | Drops connection when CDN URL expires (`HTTP 403`) | **Auto-Healing SABR Session Refresh (`refreshSabrSession`)** resumes from exact millisecond |
 | **Downloaded `.opus` Seekability** | Raw UMP dumps often show `00:00` or fail to seek | **Full binary patching of `Duration` + `56-byte SeekHead` + convergent multi-pass `Cues`** |
+| **Playback Speed (`0.10x – 4.00x`)** | Browser WSOLA time-slicing chops/drops 50–75% of audio frames | **2-Decimal Precision (`0.10` / `0,10` .. `4.00`)** with **Pitch-Preserving** & **Zero-Chopping Analog Tape Resampling (`--tape`)** |
 
 ---
 
@@ -73,8 +74,8 @@ flowchart LR
         I["UMP Demuxer (Part 20 Header, Part 21 Media, Part 35 Cookie, Part 43 Redirect)"]
     end
 
-    subgraph WebM["4. EBML/WebM Assembler (src/webm.js)"]
-        J["Live Stream: Indeterminate Segment 0x01FFFFFFFFFFFFFF + Immediate Clusters"]
+    subgraph WebM["4. EBML/WebM Assembler & Speed Engine (src/webm.js)"]
+        J["Live Stream: Indeterminate Segment + 0.10x..4.00x Speed Engine"]
         K["File Download: Patched Duration + 56B SeekHead + Multi-Pass Cues"]
     end
 
@@ -97,21 +98,19 @@ In [`src/innertube.js`](./src/innertube.js):
    - Checks whether the requested video offers a high-bitrate `itag 774` stream.
    - **Strict Fallback Rule**: If a video does not have `itag 774`, `ytdlm` **discards the authenticated context** and resolves `itag 251` using an **Anonymous Guest session (`guest: true`)**. Main account tokens are never used to stream or download `itag 251`.
 
-### 2.3. Binary EBML/WebM Patching: Live Streaming vs. Seekable Download
+### 2.3. Binary EBML/WebM Patching & Zero-Chopping Speed Control (`0.10x – 4.00x`)
 
-Raw UMP media payloads (`Part 21`) contain an unpatched WebM Initialization Segment (`Duration = 0` and a fixed Segment size) followed by fragmented `Cluster` chunks. [`src/webm.js`](./src/webm.js) handles two distinct modes:
+Raw UMP media payloads (`Part 21`) contain an unpatched WebM Initialization Segment (`Duration = 0` and a fixed Segment size) followed by fragmented `Cluster` chunks. [`src/webm.js`](./src/webm.js) handles:
 
 * **Live Streaming Mode (`buildStreamingWebmInit`)**:
-  - Patches `Segment -> Info -> Duration` (`0x4489`, 64-bit float) with the track's actual duration in milliseconds.
-  - Rewrites the 12-byte `Segment` header (`0x18538067`) to the standard 8-byte EBML unknown/indeterminate streaming size:
-    ```text
-    18 53 80 67  01 FF FF FF FF FF FF FF
-    ```
-  - Downstream decoders (`@discordjs/voice`, `FFmpeg`, `Lavaplayer`, `GStreamer`, `MPV`) immediately recognize the stream as live WebM/Opus and decode incoming `Cluster` (`0x1F43B675`) frames on the fly.
+  - Patches `Segment -> Info -> Duration` (`0x4489`, 64-bit float) with the track's effective duration (`durationMs / speed`).
+  - Rewrites the 12-byte `Segment` header (`0x18538067`) to the standard 8-byte EBML unknown/indeterminate streaming size (`18 53 80 67 01 FF FF FF FF FF FF FF`).
 * **Seekable File Download Mode (`buildSeekableWebmFile`)**:
-  - Computes the exact total duration from the final assembled `Cluster`.
-  - Injects a 56-byte `SeekHead` (`0x114D9B74`) pointing to `Info`, `Tracks`, and `Cues`.
-  - Runs a convergent multi-pass loop (up to 5 passes) to build the `Cues` index table (`0x1C53BB6B`) mapping every `Cluster` timecode to its exact byte offset, producing a 100% seekable `.opus` file.
+  - Injects a 56-byte `SeekHead` (`0x114D9B74`) pointing to `Info`, `Tracks`, and `Cues`, and runs a convergent multi-pass loop to build the `Cues` index table (`0x1C53BB6B`).
+* **Fine-Grained Playback Speed Control (`0.10x` to `4.00x`, step `0.01`)**:
+  - Accepts both dot (`0.10`, `0.11`, ..., `4.00`) and comma (`"0,10"`, `"0,11"`, ..., `"4,00"`) decimal formats via `normalizePlaybackSpeed()`.
+  - **Pitch-Preserving Mode (`preservePitch: true`, default)**: Decomposes any speed in `[0.10, 4.00]` into a smooth multi-stage `atempo` cascade (`buildAtempoFilter('0,11') -> 'atempo=0.5,atempo=0.5,atempo=0.5,atempo=0.88'`).
+  - **Zero-Chopping Analog Tape Resampling Mode (`preservePitch: false` / `--tape` / `?tape=1`)**: Unlike browser WSOLA time-slicing (which cuts out 50–75% of audio frames at high speeds or duplicates 20ms windows at slow speeds), Tape Mode uses continuous sample-rate interpolation (`asetrate=48000*speed,aresample=48000`) so **0% of audio frames are ever dropped or repeated**.
 
 ### 2.4. Unlimited Multi-Stream Concurrency ($O(1)$ RAM) & 24/7 Continuous Playback
 
@@ -134,7 +133,7 @@ Raw UMP media payloads (`Part 21`) contain an unpatched WebM Initialization Segm
 
 ```text
 ytdlm/
-├── package.json                # Node.js package config (CommonJS + ESM + CLI binary)
+├── package.json                # Node.js package config (@ytdlm/ytdlm, CommonJS + ESM + CLI)
 ├── LICENSE                     # Standard SPDX MIT License
 ├── DISCLAIMER.md               # Legal Disclaimer, Copyright Notice & Contributor Protection
 ├── README.md                   # Architecture & Multi-Language Integration Documentation
@@ -144,7 +143,7 @@ ytdlm/
 │   ├── index.js                # CommonJS entrypoint
 │   ├── index.mjs               # ES Module entrypoint
 │   ├── protobuf.js             # Pure JS Protobuf wire encoder/decoder & SABR UMP demuxer
-│   ├── webm.js                 # EBML/WebM parser, SeekHead/Cues builder & O(1) Cluster Assembler
+│   ├── webm.js                 # EBML/WebM parser, SeekHead/Cues builder & 0.10x..4.00x Speed Engine
 │   ├── decipher.js             # Standalone Node.js VM base.js n-challenge decipher & disk cache
 │   ├── innertube.js            # TVHTML5 Guest Pool (251), TV OAuth (774), Search & oEmbed
 │   ├── sabr-stream.js          # Backpressure-aware Readable stream, auto-heal & file downloader
@@ -153,17 +152,17 @@ ytdlm/
 │   ├── javascript/
 │   │   └── discord-js-bot.js   # Discord.js v14 + @discordjs/voice Multi-Guild & 24/7 Manager
 │   ├── python/
-│   │   ├── pyproject.toml      # PyPI package configuration
-│   │   ├── ytdlm.py            # Python SDK (Subprocess Pipe + HTTP Gateway)
+│   │   ├── pyproject.toml      # PyPI package configuration (ytdlm)
+│   │   ├── ytdlm.py            # Python SDK (Subprocess Pipe + HTTP Gateway + 0.10x..4.00x Speed)
 │   │   └── discord_py_bot.py   # Discord.py bot example using FFmpegOpusAudio(codec="copy")
 │   ├── java/
-│   │   ├── pom.xml             # Maven / JitPack build configuration
+│   │   ├── pom.xml             # Maven / JitPack build configuration (dev.ytdlm:ytdlm-java)
 │   │   └── YtdlmClient.java    # Java 11+ SDK for JDA, Lavaplayer & Lavalink
 │   └── rust/
 │       ├── Cargo.toml          # Crates.io package configuration (ytdlm-rs)
 │       └── src/lib.rs          # Rust SDK for Serenity / Songbird / Twilight
 └── test/
-    └── verify.js               # Automated verification suite (Metadata, Time-to-First-Byte, HTTP Server)
+    └── verify.js               # Automated verification suite (Metadata, Time-to-First-Byte, Speed, HTTP)
 ```
 
 ---
@@ -173,9 +172,14 @@ ytdlm/
 Requirements: **Node.js >= 18.0.0** (zero external npm dependencies).
 
 ```bash
-npm install -g ytdlm
-# Or from a local clone:
-npm link
+# Node.js / CLI (npm):
+npm install -g @ytdlm/ytdlm
+
+# Python SDK (PyPI):
+pip install ytdlm
+
+# Rust SDK (crates.io):
+cargo add ytdlm-rs
 ```
 
 ### CLI Command & Flag Reference
@@ -192,6 +196,8 @@ npm link
 | `-f, --format <251\|774\|bestaudio>` | Select format (`251`: Guest ~160kbps Opus; `774`: TV Premium ~256kbps Opus). |
 | `--guest` | Force anonymous Guest `TVHTML5` mode (enabled by default for `251`). |
 | `--start <ms>` | Start streaming immediately from the given millisecond offset (instant seek). |
+| `--speed <0.10..4.00>` | Adjust playback speed from `0.10` (`0,10`) to `4.00` in `0.01` steps (default: `1.0`). |
+| `--no-preserve-pitch`, `--tape` | Enable **Zero-Chopping Analog Tape Resampling** (`0%` audio slicing/dropping). |
 | `--loop` | Loop the audio stream infinitely (24/7 mode). |
 | `-q, --quiet` | Suppress progress/status logs on `stderr`. |
 
@@ -201,14 +207,14 @@ npm link
 # 1. Pipe live WebM/Opus audio directly to ffplay or mpv (~300ms startup):
 ytdlm stream "https://www.youtube.com/watch?v=aqz-KE-bpKQ" | ffplay -i pipe:0 -nodisp
 
-# 2. Search and stream starting at 1:00 (--start 60000):
+# 2. Stream at 1.25x speed (or "0,85" slow-mo) with Zero-Chopping Tape Resampling (--tape):
+ytdlm stream "https://www.youtube.com/watch?v=aqz-KE-bpKQ" --speed 0,85 --tape | ffplay -i pipe:0 -nodisp
+
+# 3. Search and stream starting at 1:00 (--start 60000):
 ytdlm stream "ytsearch:Big Buck Bunny Blender Foundation" -f 251 --start 60000 -q | mpv -
 
-# 3. Continuous 24/7 infinite loop (--loop):
-ytdlm stream "https://www.youtube.com/watch?v=aqz-KE-bpKQ" --guest --loop -q | ffmpeg -i pipe:0 -c:a copy -f ogg -
-
-# 4. Download a 100% seekable .opus file into ./music:
-ytdlm download "https://www.youtube.com/watch?v=aqz-KE-bpKQ" -o ./music/
+# 4. Download a 100% seekable .opus file at 1.50x speed into ./music:
+ytdlm download "https://www.youtube.com/watch?v=aqz-KE-bpKQ" --speed 1.50 -o ./music/
 ```
 
 ---
@@ -224,8 +230,10 @@ const {
   downloadAudio,
   getInfo,
   searchVideos,
+  normalizePlaybackSpeed,
+  buildAtempoFilter,
   startServer,
-} = require('ytdlm');
+} = require('@ytdlm/ytdlm');
 
 // ES Modules (ESM)
 import {
@@ -234,8 +242,10 @@ import {
   downloadAudio,
   getInfo,
   searchVideos,
+  normalizePlaybackSpeed,
+  buildAtempoFilter,
   startServer,
-} from 'ytdlm';
+} from '@ytdlm/ytdlm';
 ```
 
 ### 5.1. `streamAudio(videoIdOrQuery, options)`
@@ -244,19 +254,21 @@ Returns a backpressure-aware Node.js `Readable` stream emitting patched WebM Ini
   - `itag` (`number | string`, default: `251`): `251` (Guest Opus) or `774` (TV Premium HQ Opus).
   - `guest` (`boolean`, default: `true` for `251`): Force anonymous Guest session.
   - `startTimeMs` (`number`, default: `0`): Instant seek offset in milliseconds.
+  - `speed` (`number | string`, default: `1.0`): Playback speed float from `0.10` (`"0,10"`) to `4.00` (`"4.00"`).
+  - `preservePitch` (`boolean`, default: `true`): Set `false` for **Zero-Chopping Analog Tape Resampling** (`asetrate` + `aresample`, 0% dropped frames).
   - `loop` (`boolean`, default: `false`): Infinite 24/7 single-track loop.
   - `highWaterMark` (`number`, default: `524288` / 512 KB): Stream buffer threshold.
   - `onProgress` (`function({ bufferedMs, durationMs, percent, bytes, itag })`): Progress callback.
 - **Methods & Events**:
   - `await stream.getInfo()`: Resolves with the track metadata object before the first media cluster is emitted.
-  - `'info'`: Emits `(ctx)` metadata.
+  - `'info'`: Emits `(ctx)` metadata (including `speed`, `preservePitch`, `atempoFilter`, `effectiveDurationMs`).
   - `'loop'`: Emits `(ctx)` whenever the stream loops in `loop: true` mode.
 
 ### 5.2. `streamContinuous(tracksOrProvider, options)`
 Creates a 24/7 continuous stream across an array of tracks or an `async (index) => nextUrlOrQuery` provider function. Emits `'trackStart'`, `'trackEnd'`, and `'trackError'`.
 
 ### 5.3. `downloadAudio(videoIdOrQuery, outputPath, options)`
-Downloads and assembles a seekable `.opus` file with patched `Duration`, `SeekHead`, and `Cues`. Returns `{ info, buffer, outputPath, durationMs, clustersCount, sizeBytes }`.
+Downloads and assembles a seekable `.opus` file with patched `Duration`, `SeekHead`, and `Cues` (supporting `speed: 0.10 .. 4.00` and `preservePitch`). Returns `{ info, buffer, outputPath, durationMs, sourceDurationMs, speed, atempoFilter, clustersCount, sizeBytes }`.
 
 ---
 
@@ -270,11 +282,12 @@ ytdlm serve --port 8787 --host 127.0.0.1
 
 ### Endpoints
 
-1. **`GET /stream?v=<id_or_url>&itag=251&guest=1&start=0&loop=0`**
+1. **`GET /stream?v=<id_or_url>&itag=251&guest=1&start=0&loop=0&speed=1.0&tape=0`**
    - Streams live `audio/webm; codecs="opus"` (`Transfer-Encoding: chunked`).
-   - Response headers include `X-Video-Id`, `X-Audio-Itag`, `X-Audio-Mode`, `X-Duration-Ms`, `X-Audio-Bitrate`.
-   - Example: `http://127.0.0.1:8787/stream?v=aqz-KE-bpKQ&itag=251&guest=1&start=0`
-2. **`GET /info?v=<id_or_url>&itag=251`** — Returns JSON metadata + `streamUrl`.
+   - Supports `speed=0.10..4.00` (or `0,10..4,00`) and `tape=1` (`preservePitch=0`) for zero-chopping waveform resampling.
+   - Response headers include `X-Video-Id`, `X-Audio-Itag`, `X-Audio-Mode`, `X-Duration-Ms`, `X-Effective-Duration-Ms`, `X-Audio-Bitrate`, `X-Audio-Speed`, `X-Audio-Preserve-Pitch`, `X-Audio-Atempo-Filter`.
+   - Example: `http://127.0.0.1:8787/stream?v=aqz-KE-bpKQ&itag=251&guest=1&speed=1.25&tape=1`
+2. **`GET /info?v=<id_or_url>&itag=251&speed=1.0`** — Returns JSON metadata + `streamUrl`.
 3. **`GET /search?q=<query>&limit=5`** — Returns JSON search results.
 4. **`GET /health`** — Health check endpoint.
 
@@ -334,6 +347,12 @@ client.on('messageCreate', async message => {
     if (track) return message.reply(`Seeked to **${sec}s**!`);
   }
 
+  if (message.content.startsWith('!speed ')) {
+    const rawSpeed = message.content.slice(7).trim(); // e.g. "0,85" or "1.25" (0.10 .. 4.00)
+    const track = await music.setSpeed(message.guild.id, rawSpeed);
+    if (track) return message.reply(`Playback speed set to **${track.speed}x**!`);
+  }
+
   if (message.content.startsWith('!loop ')) {
     const mode = message.content.slice(6).trim().toLowerCase(); // 'off' | 'track' | 'queue'
     music.setLoopMode(message.guild.id, mode);
@@ -360,7 +379,7 @@ client.login(process.env.DISCORD_TOKEN);
 
 See [`sdks/python/ytdlm.py`](./sdks/python/ytdlm.py) and [`sdks/python/discord_py_bot.py`](./sdks/python/discord_py_bot.py).
 
-Use `discord.FFmpegOpusAudio(proc.stdout, pipe=True, codec="copy")` so FFmpeg copies the pre-encoded 48kHz Opus frames directly to Discord Voice with **0% transcoding CPU usage**:
+Use `discord.FFmpegOpusAudio(proc.stdout, pipe=True, codec="copy")` so FFmpeg copies the pre-encoded 48kHz Opus frames directly to Discord Voice with **0% transcoding CPU usage** (or pass `speed="1,25"` for `0.10x..4.00x` speed control):
 
 ```python
 import discord
@@ -392,8 +411,8 @@ async def play(ctx: commands.Context, *, query: str):
         vc.stop()
     cleanup_guild_proc(ctx.guild.id)
 
-    track = ytdlm.get_info(query)
-    proc = ytdlm.open_stream_pipe(track.video_id, itag=track.itag, start_ms=0, loop=False)
+    track = ytdlm.get_info(query, speed=1.0)
+    proc = ytdlm.open_stream_pipe(track.video_id, itag=track.itag, start_ms=0, loop=False, speed=1.0)
     guild_processes[ctx.guild.id] = proc
 
     source = discord.FFmpegOpusAudio(proc.stdout, pipe=True, codec="copy")
@@ -410,7 +429,7 @@ async def play(ctx: commands.Context, *, query: str):
 
 See [`sdks/java/YtdlmClient.java`](./sdks/java/YtdlmClient.java) and [`sdks/java/pom.xml`](./sdks/java/pom.xml).
 
-Register `HttpAudioSourceManager` in Lavaplayer and pass `ytdlm.getStreamUrl(...)` to `playerManager.loadItem(...)` — Lavaplayer's built-in `MatroskaAudioTrack` demuxer streams the WebM/Opus chunks directly over HTTP:
+Register `HttpAudioSourceManager` in Lavaplayer and pass `ytdlm.getStreamUrl(...)` to `playerManager.loadItem(...)` — Lavaplayer's built-in `MatroskaAudioTrack` demuxer streams the WebM/Opus chunks directly over HTTP (with optional `speed` in `0.10 .. 4.00`):
 
 ```java
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
@@ -426,8 +445,8 @@ public class JdaLavaplayerIntegration {
         this.playerManager.registerSourceManager(new HttpAudioSourceManager());
     }
 
-    public String resolveStreamUrl(String queryOrUrl, long startTimeMs) {
-        return ytdlm.getStreamUrl(queryOrUrl, 251, startTimeMs);
+    public String resolveStreamUrl(String queryOrUrl, long startTimeMs, double speed) {
+        return ytdlm.getStreamUrl(queryOrUrl, 251, startTimeMs, speed);
     }
 }
 ```
@@ -447,10 +466,11 @@ pub async fn play_on_songbird(
     http_client: reqwest::Client,
     query_or_url: &str,
     start_ms: u64,
+    speed: f64,
 ) -> Result<ytdlm_rs::TrackInfo, Box<dyn std::error::Error + Send + Sync>> {
     let ytdlm = YtdlmClient::default().with_server_url("http://127.0.0.1:8787");
     let info = ytdlm.get_info(query_or_url).await?;
-    let stream_url = ytdlm.get_stream_url(&info.video_id, start_ms);
+    let stream_url = ytdlm.get_stream_url_with_speed(&info.video_id, start_ms, speed);
 
     let input = HttpRequest::new(http_client, stream_url);
     let mut handler = call_lock.lock().await;

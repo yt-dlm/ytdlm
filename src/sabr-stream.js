@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawn, spawnSync } = require('child_process');
 const { Readable } = require('stream');
 const {
   pbDecodeBase64ToU8,
@@ -11,12 +12,146 @@ const {
   demuxUmp,
 } = require('./protobuf');
 const {
+  normalizePlaybackSpeed,
+  buildAtempoFilter,
   buildStreamingWebmInit,
   buildSeekableWebmFile,
   WebmClusterAssembler,
 } = require('./webm');
 const { decipherSabrUrl } = require('./decipher');
 const { resolveSabrContext, sanitizeFilename } = require('./innertube');
+
+const ffmpegCheckCache = new Map();
+
+function resolveFfmpegBinary(customPath) {
+  const candidate = customPath || process.env.FFMPEG_PATH || 'ffmpeg';
+  if (ffmpegCheckCache.has(candidate)) {
+    return ffmpegCheckCache.get(candidate);
+  }
+  try {
+    const res = spawnSync(candidate, ['-version'], {
+      stdio: 'ignore',
+      windowsHide: true,
+      timeout: 3000,
+    });
+    const ok = res && res.status === 0;
+    ffmpegCheckCache.set(candidate, ok ? candidate : null);
+    return ok ? candidate : null;
+  } catch (e) {
+    ffmpegCheckCache.set(candidate, null);
+    return null;
+  }
+}
+
+function createFfmpegSpeedStream(rawStream, speed, options, ffmpegBin) {
+  const preservePitch = options.preservePitch !== false;
+  const atempoFilter = buildAtempoFilter(speed, { preservePitch });
+  let ff = null;
+  let destroyed = false;
+
+  const outStream = new Readable({
+    highWaterMark: options.highWaterMark || 512 * 1024,
+    read() {
+      if (ff && ff.stdout && !destroyed) {
+        ff.stdout.resume();
+      }
+    },
+    destroy(err, cb) {
+      destroyed = true;
+      try {
+        rawStream.destroy();
+      } catch (e) {}
+      if (ff) {
+        try {
+          ff.kill('SIGKILL');
+        } catch (e) {}
+      }
+      cb(err);
+    },
+  });
+
+  outStream.speed = speed;
+  outStream.preservePitch = preservePitch;
+  outStream.atempoFilter = atempoFilter;
+  outStream.getInfo = () =>
+    rawStream.getInfo().then(ctx => ({
+      ...ctx,
+      speed,
+      preservePitch,
+      atempoFilter,
+      effectiveDurationMs: Math.round((ctx.durationMs || 0) / speed),
+    }));
+
+  rawStream.once('info', ctx => {
+    if (destroyed) return;
+    const enrichedCtx = {
+      ...ctx,
+      speed,
+      preservePitch,
+      atempoFilter,
+      effectiveDurationMs: Math.round((ctx.durationMs || 0) / speed),
+    };
+    outStream.emit('info', enrichedCtx);
+
+    const bitrate = ctx.itag === 774 ? '256k' : '160k';
+    ff = spawn(
+      ffmpegBin,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        'pipe:0',
+        '-vn',
+        '-af',
+        atempoFilter,
+        '-c:a',
+        'libopus',
+        '-b:a',
+        bitrate,
+        '-vbr',
+        'on',
+        '-application',
+        'audio',
+        '-f',
+        'webm',
+        'pipe:1',
+      ],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      }
+    );
+
+    ff.stdin.on('error', () => {});
+    rawStream.pipe(ff.stdin);
+
+    ff.stdout.on('data', chunk => {
+      if (destroyed) return;
+      if (!outStream.push(chunk)) {
+        ff.stdout.pause();
+      }
+    });
+
+    ff.stdout.once('end', () => {
+      if (!destroyed) outStream.push(null);
+    });
+
+    ff.once('error', err => {
+      if (!destroyed) outStream.destroy(err);
+    });
+  });
+
+  rawStream.on('loop', ctx => {
+    if (!destroyed) outStream.emit('loop', ctx);
+  });
+
+  rawStream.once('error', err => {
+    if (!destroyed) outStream.destroy(err);
+  });
+
+  return outStream;
+}
 
 /**
  * Creates a real-time Node.js Readable stream of WebM/Opus audio from YouTube SABR UMP.
@@ -30,11 +165,30 @@ const { resolveSabrContext, sanitizeFilename } = require('./innertube');
  * @param {boolean} [options.guest] - Force anonymous Guest session (no tokens/cookies)
  * @param {string} [options.accessToken] - Optional TV OAuth access token for ITAG 774
  * @param {number} [options.startTimeMs] - Optional start time offset in milliseconds (default 0)
+ * @param {number|string} [options.speed=1.0] - Playback speed float from 0.10 to 4.00 (supports "0,10".."4.00")
+ * @param {boolean} [options.preservePitch=true] - Keep original pitch (true) or use pure zero-chopping tape resampling (false)
+ * @param {'auto'|'ffmpeg'|'container'} [options.speedMode='auto'] - Speed engine mode
  * @param {number} [options.highWaterMark] - Stream buffer highWaterMark (default 512 KB)
  * @param {Function} [options.onProgress] - Callback ({ bufferedMs, durationMs, percent, bytes })
- * @returns {Readable & { getInfo: () => Promise<object> }}
+ * @returns {Readable & { getInfo: () => Promise<object>, speed: number, preservePitch: boolean, atempoFilter: string }}
  */
 function createSabrAudioStream(videoIdOrQuery, options = {}) {
+  const speed = normalizePlaybackSpeed(options.speed);
+  const preservePitch = options.preservePitch !== false;
+  const atempoFilter = buildAtempoFilter(speed, { preservePitch });
+
+  if (speed !== 1.0 && !options._rawForSpeed && options.speedMode !== 'container') {
+    const ffmpegBin = resolveFfmpegBinary(options.ffmpegPath);
+    if (ffmpegBin) {
+      const rawStream = createSabrAudioStream(videoIdOrQuery, {
+        ...options,
+        speed: 1.0,
+        _rawForSpeed: true,
+      });
+      return createFfmpegSpeedStream(rawStream, speed, options, ffmpegBin);
+    }
+  }
+
   let session = null;
   let aborted = false;
   let pausedByBackpressure = false;
@@ -63,13 +217,18 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
     },
   });
 
+  stream.speed = speed;
+  stream.atempoFilter = atempoFilter;
   stream.getInfo = () => infoPromise;
 
   let lastEmittedTc = -1;
   let emittedInit = false;
   let emittedBytes = 0;
 
-  const startOffsetMs = Math.max(0, Number(options.startTimeMs) || 0);
+  const startOffsetMs = Math.max(
+    0,
+    Number(options.startTimeMs !== undefined ? options.startTimeMs : (Number(options.startSec) || 0) * 1000) || 0
+  );
 
   const assembler = new WebmClusterAssembler({
     retainClusters: false, // O(1) constant memory for live streaming (never holds emitted clusters in RAM)
@@ -77,7 +236,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
     onInit(initU8) {
       if (emittedInit || aborted) return;
       emittedInit = true;
-      const patchedInit = buildStreamingWebmInit(initU8, session?.durationMs || 0);
+      const patchedInit = buildStreamingWebmInit(initU8, session?.durationMs || 0, speed);
       emittedBytes += patchedInit.length;
       const canContinue = stream.push(patchedInit);
       if (!canContinue) pausedByBackpressure = true;
@@ -161,6 +320,10 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
         refreshCount: 0,
         abortCtrl: null,
       };
+
+      ctx.speed = speed;
+      ctx.atempoFilter = atempoFilter;
+      ctx.effectiveDurationMs = Math.round((ctx.durationMs || 0) / speed);
 
       infoResolve(ctx);
       stream.emit('info', ctx);
@@ -468,15 +631,103 @@ async function downloadSabrAudio(videoIdOrQuery, outputPath = null, options = {}
   }
 
   assembler.flush();
-  const built = buildSeekableWebmFile(
+  const speed = normalizePlaybackSpeed(options.speed);
+  const preservePitch = options.preservePitch !== false;
+  const atempoFilter = buildAtempoFilter(speed, { preservePitch });
+
+  let built = buildSeekableWebmFile(
     assembler.initSegment,
     assembler.clusters,
     assembler.clusterDurations,
-    durMs
+    durMs,
+    speed !== 1.0 && options.speedMode === 'container' ? speed : 1.0
   );
   if (!built || !built.buffer) {
     throw new Error('Failed to assemble WebM audio file from SABR UMP segments');
   }
+
+  if (speed !== 1.0 && options.speedMode !== 'container') {
+    const ffmpegBin = resolveFfmpegBinary(options.ffmpegPath);
+    if (ffmpegBin) {
+      const bitrate = ctx.itag === 774 ? '256k' : '160k';
+      const transcoded = spawnSync(
+        ffmpegBin,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-i',
+          'pipe:0',
+          '-vn',
+          '-af',
+          atempoFilter,
+          '-c:a',
+          'libopus',
+          '-b:a',
+          bitrate,
+          '-vbr',
+          'on',
+          '-application',
+          'audio',
+          '-f',
+          'webm',
+          'pipe:1',
+        ],
+        {
+          input: built.buffer,
+          maxBuffer: Math.max(64 * 1024 * 1024, built.buffer.length * 12),
+          windowsHide: true,
+        }
+      );
+      if (transcoded && transcoded.status === 0 && transcoded.stdout && transcoded.stdout.length > 64) {
+        const speedAssembler = new WebmClusterAssembler();
+        speedAssembler.feed(new Uint8Array(transcoded.stdout));
+        speedAssembler.flush();
+        const rebuilt = buildSeekableWebmFile(
+          speedAssembler.initSegment,
+          speedAssembler.clusters,
+          speedAssembler.clusterDurations,
+          Math.round(durMs / speed),
+          1.0
+        );
+        if (rebuilt && rebuilt.buffer) {
+          built = {
+            ...rebuilt,
+            speed,
+            sourceDurationMs: durMs,
+          };
+        } else {
+          built = {
+            buffer: Buffer.from(transcoded.stdout),
+            durationMs: Math.round(durMs / speed),
+            sourceDurationMs: durMs,
+            speed,
+            clustersCount: speedAssembler.clustersCount || built.clustersCount,
+          };
+        }
+      } else {
+        built = buildSeekableWebmFile(
+          assembler.initSegment,
+          assembler.clusters,
+          assembler.clusterDurations,
+          durMs,
+          speed
+        );
+      }
+    } else {
+      built = buildSeekableWebmFile(
+        assembler.initSegment,
+        assembler.clusters,
+        assembler.clusterDurations,
+        durMs,
+        speed
+      );
+    }
+  }
+
+  ctx.speed = speed;
+  ctx.atempoFilter = atempoFilter;
+  ctx.effectiveDurationMs = built.durationMs;
 
   let finalPath = outputPath;
   if (finalPath === '-') {
@@ -495,6 +746,9 @@ async function downloadSabrAudio(videoIdOrQuery, outputPath = null, options = {}
     buffer: built.buffer,
     outputPath: finalPath,
     durationMs: built.durationMs,
+    sourceDurationMs: durMs,
+    speed,
+    atempoFilter,
     clustersCount: built.clustersCount,
     sizeBytes: built.buffer.length,
   };

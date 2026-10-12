@@ -20,6 +20,10 @@ const {
 const { decipherSabrUrl, getPlayerContext } = require('./decipher');
 const { startServer } = require('./server');
 const {
+  MIN_PLAYBACK_SPEED,
+  MAX_PLAYBACK_SPEED,
+  normalizePlaybackSpeed,
+  buildAtempoFilter,
   parseAndPatchWebmInit,
   buildStreamingWebmInit,
   buildSeekableWebmFile,
@@ -37,6 +41,9 @@ const {
  */
 async function getInfo(videoIdOrQuery, options = {}) {
   const ctx = await resolveSabrContext(videoIdOrQuery, options);
+  const speed = normalizePlaybackSpeed(options.speed);
+  const preservePitch = options.preservePitch !== false;
+  const atempoFilter = buildAtempoFilter(speed, { preservePitch });
   return {
     videoId: ctx.videoId,
     url: `https://www.youtube.com/watch?v=${ctx.videoId}`,
@@ -44,6 +51,7 @@ async function getInfo(videoIdOrQuery, options = {}) {
     author: ctx.author,
     durationSec: ctx.durationSec,
     durationMs: ctx.durationMs,
+    effectiveDurationMs: Math.round((ctx.durationMs || 0) / speed),
     thumbnail: ctx.thumbnail,
     itag: ctx.itag,
     mimeType: ctx.mimeType,
@@ -52,6 +60,9 @@ async function getInfo(videoIdOrQuery, options = {}) {
     channels: ctx.channels,
     isGuest: ctx.isGuest,
     mode: ctx.mode,
+    speed,
+    preservePitch,
+    atempoFilter,
     filename: sanitizeFilename(ctx.title, ctx.author, ctx.itag),
   };
 }
@@ -84,6 +95,14 @@ class Ytdlm {
   serve(options = {}) {
     return startServer({ ...this.defaultOptions, ...options });
   }
+
+  normalizeSpeed(speed) {
+    return normalizePlaybackSpeed(speed);
+  }
+
+  buildAtempoFilter(speed, options = {}) {
+    return buildAtempoFilter(speed, options);
+  }
 }
 
 module.exports = {
@@ -100,6 +119,10 @@ module.exports = {
   extractVideoId,
   sanitizeFilename,
   getGuestVisitorData,
+  normalizePlaybackSpeed,
+  buildAtempoFilter,
+  MIN_PLAYBACK_SPEED,
+  MAX_PLAYBACK_SPEED,
   startServer,
   auth: {
     loadStoredAuth,
@@ -109,6 +132,10 @@ module.exports = {
     getValidTvAccessToken,
   },
   webm: {
+    MIN_PLAYBACK_SPEED,
+    MAX_PLAYBACK_SPEED,
+    normalizePlaybackSpeed,
+    buildAtempoFilter,
     parseAndPatchWebmInit,
     buildStreamingWebmInit,
     buildSeekableWebmFile,

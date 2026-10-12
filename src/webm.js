@@ -106,8 +106,74 @@ function isAudioInitSegment(bytes) {
   return false;
 }
 
-function parseAndPatchWebmInit(initBytes, durationMs) {
+const MIN_PLAYBACK_SPEED = 0.10;
+const MAX_PLAYBACK_SPEED = 4.00;
+
+/**
+ * Normalizes and clamps playback speed to a 2-decimal float in [0.10, 4.00].
+ * Supports both dot ("0.10", 1.25) and comma ("0,10", "0,11") decimal formats.
+ *
+ * @param {number|string} [speed=1.0]
+ * @returns {number} Normalized speed in [0.10, 4.00] (e.g. 0.1, 0.11, 1.25, 4)
+ */
+function normalizePlaybackSpeed(speed) {
+  if (speed === undefined || speed === null || speed === '') return 1.0;
+  const parsed =
+    typeof speed === 'string'
+      ? Number(speed.trim().replace(',', '.'))
+      : Number(speed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 1.0;
+  const clamped = Math.min(MAX_PLAYBACK_SPEED, Math.max(MIN_PLAYBACK_SPEED, parsed));
+  return Math.round(clamped * 100) / 100;
+}
+
+/**
+ * Builds an FFmpeg audio filter chain for any playback speed in [0.10, 4.00].
+ *
+ * - When `preservePitch = true` (default): Uses cascaded `atempo` stages within [0.5, 2.0]
+ *   to keep original vocal pitch.
+ * - When `preservePitch = false` ("tape" / lossless waveform mode): Uses continuous sample-rate
+ *   interpolation (`asetrate=48000*speed,aresample=48000`) which NEVER drops or duplicates
+ *   time slices (zero WSOLA chopping/stuttering artifacts, even at extreme 0.10x or 4.00x speeds).
+ *
+ * @param {number|string} [speed=1.0]
+ * @param {object} [options]
+ * @param {boolean} [options.preservePitch=true]
+ * @param {number} [options.sampleRate=48000]
+ * @returns {string}
+ */
+function buildAtempoFilter(speed, options = {}) {
+  const spd = normalizePlaybackSpeed(speed);
+  const preservePitch = options.preservePitch !== false;
+  const sampleRate = Number(options.sampleRate) || 48000;
+
+  if (Math.abs(spd - 1.0) < 1e-4) return 'atempo=1.0';
+
+  if (!preservePitch) {
+    const targetRate = Math.max(4800, Math.round(sampleRate * spd));
+    return `asetrate=${targetRate},aresample=${sampleRate}`;
+  }
+
+  const stages = [];
+  let rem = spd;
+  while (rem < 0.5 - 1e-6) {
+    stages.push('atempo=0.5');
+    rem /= 0.5;
+  }
+  while (rem > 2.0 + 1e-6) {
+    stages.push('atempo=2.0');
+    rem /= 2.0;
+  }
+  const finalStage = Math.round(rem * 10000) / 10000;
+  if (Math.abs(finalStage - 1.0) > 1e-4 || stages.length === 0) {
+    stages.push(`atempo=${finalStage}`);
+  }
+  return stages.join(',');
+}
+
+function parseAndPatchWebmInit(initBytes, durationMs, speed = 1.0) {
   if (!initBytes || initBytes.length < 32) return null;
+  const spd = normalizePlaybackSpeed(speed);
   const firstId = readEbmlId(initBytes, 0);
   if (!firstId || firstId.id !== 0x1a45dfa3) return null;
   const ebmlSz = readEbmlVint(initBytes, firstId.length);
@@ -126,6 +192,7 @@ function parseAndPatchWebmInit(initBytes, durationMs) {
   let tracksElem = null;
   const otherElems = [];
   let timecodeScaleNs = 1000000;
+  let effectiveTimecodeScaleNs = 1000000;
   let trackNumber = 1;
 
   while (pos < initBytes.length) {
@@ -154,11 +221,20 @@ function parseAndPatchWebmInit(initBytes, durationMs) {
           }
           if (scale > 0) timecodeScaleNs = scale;
         }
-        if (cId.id !== 0x4489) {
+        if (cId.id !== 0x4489 && (spd === 1.0 || cId.id !== 0x2ad7b1)) {
           children.push(initBytes.slice(iPos, cDataEnd));
         }
         if (cDataEnd <= iPos) break;
         iPos = cDataEnd;
+      }
+
+      effectiveTimecodeScaleNs =
+        spd !== 1.0
+          ? Math.max(1000, Math.round((timecodeScaleNs || 1000000) / spd))
+          : (timecodeScaleNs || 1000000);
+
+      if (spd !== 1.0) {
+        children.unshift(encodeEbmlUInt(0x2ad7b1, effectiveTimecodeScaleNs));
       }
 
       if (durationMs && durationMs > 0 && isFinite(durationMs)) {
@@ -430,8 +506,8 @@ function getClusterDurationMs(bytes, clusterStart = 0) {
  * Uses the standard 8-byte EBML unknown/indeterminate Segment size (0x01FFFFFFFFFFFFFF)
  * so FFmpeg, @discordjs/voice, Lavaplayer, and GStreamer can stream Clusters immediately!
  */
-function buildStreamingWebmInit(initBytes, durationMs = 0) {
-  const parsed = parseAndPatchWebmInit(initBytes, durationMs);
+function buildStreamingWebmInit(initBytes, durationMs = 0, speed = 1.0) {
+  const parsed = parseAndPatchWebmInit(initBytes, durationMs, speed);
   if (!parsed) return Buffer.from(initBytes);
   const { ebmlHeader, infoElem, tracksElem, otherElems } = parsed;
   const segHeader = new Uint8Array([
@@ -451,7 +527,8 @@ function buildStreamingWebmInit(initBytes, durationMs = 0) {
  * Builds a 100% seekable WebM / Opus file Buffer with exact Segment size,
  * 56-byte SeekHead, patched Duration float, and convergent multi-pass Cues index.
  */
-function buildSeekableWebmFile(initBytes, clustersMap, clusterDurationsMap, fallbackDurMs = 0) {
+function buildSeekableWebmFile(initBytes, clustersMap, clusterDurationsMap, fallbackDurMs = 0, speed = 1.0) {
+  const spd = normalizePlaybackSpeed(speed);
   const sortedTimecodes = Array.from(clustersMap.keys()).sort((a, b) => a - b);
   if (sortedTimecodes.length === 0 || !initBytes) return null;
 
@@ -461,7 +538,7 @@ function buildSeekableWebmFile(initBytes, clustersMap, clusterDurationsMap, fall
   const clustersEndMs = lastTc + lastClusterDur;
   const durMs = clustersEndMs > 0 ? clustersEndMs : fallbackDurMs;
 
-  const parsed = parseAndPatchWebmInit(initBytes, durMs);
+  const parsed = parseAndPatchWebmInit(initBytes, durMs, spd);
   if (!parsed) return null;
   const { ebmlHeader, infoElem, tracksElem, otherElems, timecodeScaleNs, trackNumber } = parsed;
 
@@ -520,7 +597,9 @@ function buildSeekableWebmFile(initBytes, clustersMap, clusterDurationsMap, fall
 
   return {
     buffer: Buffer.concat(parts),
-    durationMs: durMs,
+    durationMs: Math.round(durMs / spd),
+    sourceDurationMs: durMs,
+    speed: spd,
     clustersCount: sortedTimecodes.length,
   };
 }
@@ -751,6 +830,10 @@ class WebmClusterAssembler {
 }
 
 module.exports = {
+  MIN_PLAYBACK_SPEED,
+  MAX_PLAYBACK_SPEED,
+  normalizePlaybackSpeed,
+  buildAtempoFilter,
   readEbmlId,
   readEbmlVint,
   encodeEbmlVint,

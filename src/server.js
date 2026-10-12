@@ -1,18 +1,19 @@
 'use strict';
 
 const http = require('http');
-const { createSabrAudioStream } = require('./sabr-stream');
+const { createSabrAudioStream, createContinuousAudioStream } = require('./sabr-stream');
 const { resolveSabrContext, searchVideos } = require('./innertube');
+const { normalizePlaybackSpeed, buildAtempoFilter } = require('./webm');
 
 /**
  * Starts a local HTTP streaming & metadata gateway server for multi-language Discord bots
  * (Lavaplayer, Lavalink, JDA, discord.py, Songbird/Rust, Go, C#).
  *
  * Endpoints:
- *   GET /stream?v=<url_or_id_or_query>&itag=251&guest=1&start=0
+ *   GET /stream?v=<url_or_id_or_query>&itag=251&guest=1&start=0&speed=1.0
  *       -> Streams live WebM/Opus audio chunks (Content-Type: audio/webm; codecs="opus")
- *   GET /info?v=<url_or_id_or_query>&itag=251&guest=1
- *       -> Returns JSON metadata (videoId, title, author, durationMs, itag, bitrate, mode, etc.)
+ *   GET /info?v=<url_or_id_or_query>&itag=251&guest=1&speed=1.0
+ *       -> Returns JSON metadata (videoId, title, author, durationMs, itag, bitrate, mode, speed, etc.)
  *   GET /search?q=<query>&limit=5
  *       -> Returns JSON array of YouTube search results
  *   GET /health
@@ -62,8 +63,8 @@ function startServer(options = {}) {
         JSON.stringify({
           ok: true,
           service: 'ytdlm',
-          version: '1.0.0',
-          endpoints: ['/stream?v=<id_or_url>', '/info?v=<id_or_url>', '/search?q=<query>'],
+          version: '1.1.0',
+          endpoints: ['/stream?v=<id_or_url>&speed=1.0', '/info?v=<id_or_url>', '/search?q=<query>'],
         })
       );
       return;
@@ -93,6 +94,11 @@ function startServer(options = {}) {
       const itag = parsedUrl.searchParams.get('itag') || undefined;
       const guestParam = parsedUrl.searchParams.get('guest');
       const guest = guestParam === null ? undefined : guestParam !== '0' && guestParam !== 'false';
+      const speed = normalizePlaybackSpeed(parsedUrl.searchParams.get('speed') || parsedUrl.searchParams.get('rate') || 1.0);
+      const pitchParam = parsedUrl.searchParams.get('preservePitch');
+      const tapeParam = parsedUrl.searchParams.get('tape');
+      const preservePitch = tapeParam === '1' || tapeParam === 'true' ? false : pitchParam !== '0' && pitchParam !== 'false';
+      const atempoFilter = buildAtempoFilter(speed, { preservePitch });
 
       if (!v.trim()) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -102,6 +108,8 @@ function startServer(options = {}) {
 
       try {
         const ctx = await resolveSabrContext(v, { itag, guest });
+        const speedParam = speed !== 1.0 ? `&speed=${speed}` : '';
+        const pitchQuery = !preservePitch ? '&preservePitch=0' : '';
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(
           JSON.stringify({
@@ -111,6 +119,7 @@ function startServer(options = {}) {
             author: ctx.author,
             durationSec: ctx.durationSec,
             durationMs: ctx.durationMs,
+            effectiveDurationMs: Math.round((ctx.durationMs || 0) / speed),
             thumbnail: ctx.thumbnail,
             itag: ctx.itag,
             mimeType: ctx.mimeType,
@@ -119,7 +128,10 @@ function startServer(options = {}) {
             channels: ctx.channels,
             isGuest: ctx.isGuest,
             mode: ctx.mode,
-            streamUrl: `http://${host}:${port}/stream?v=${encodeURIComponent(ctx.videoId)}&itag=${ctx.itag}`,
+            speed,
+            preservePitch,
+            atempoFilter,
+            streamUrl: `http://${host}:${port}/stream?v=${encodeURIComponent(ctx.videoId)}&itag=${ctx.itag}${speedParam}${pitchQuery}`,
           })
         );
       } catch (err) {
@@ -137,6 +149,12 @@ function startServer(options = {}) {
       const startTimeMs = Number(parsedUrl.searchParams.get('start') || parsedUrl.searchParams.get('startTimeMs') || 0);
       const loopParam = parsedUrl.searchParams.get('loop');
       const loop = loopParam === '1' || loopParam === 'true';
+      const speed = normalizePlaybackSpeed(parsedUrl.searchParams.get('speed') || parsedUrl.searchParams.get('rate') || 1.0);
+      const speedMode = parsedUrl.searchParams.get('speedMode') || 'auto';
+      const pitchParam = parsedUrl.searchParams.get('preservePitch');
+      const tapeParam = parsedUrl.searchParams.get('tape');
+      const preservePitch = tapeParam === '1' || tapeParam === 'true' ? false : pitchParam !== '0' && pitchParam !== 'false';
+      const atempoFilter = buildAtempoFilter(speed, { preservePitch });
 
       if (!v.trim()) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -144,16 +162,33 @@ function startServer(options = {}) {
         return;
       }
 
-      const audioStream = createSabrAudioStream(v, {
-        itag,
-        guest,
-        startTimeMs,
-        loop,
-      });
+      const trackList = v.includes(',') && !/^https?:\/\//i.test(v)
+        ? v.split(',').map(s => s.trim()).filter(Boolean)
+        : null;
+
+      const audioStream = trackList && trackList.length > 1
+        ? createContinuousAudioStream(trackList, {
+            itag,
+            guest,
+            startTimeMs,
+            loop,
+            speed,
+            speedMode,
+            preservePitch,
+          })
+        : createSabrAudioStream(v, {
+            itag,
+            guest,
+            startTimeMs,
+            loop,
+            speed,
+            speedMode,
+            preservePitch,
+          });
 
       let headersSent = false;
 
-      audioStream.once('info', ctx => {
+      const onInfo = ctx => {
         if (headersSent || res.writableEnded) return;
         headersSent = true;
         res.writeHead(200, {
@@ -164,13 +199,20 @@ function startServer(options = {}) {
           'X-Audio-Itag': String(ctx.itag),
           'X-Audio-Mode': ctx.mode,
           'X-Duration-Ms': String(ctx.durationMs || 0),
+          'X-Effective-Duration-Ms': String(Math.round((ctx.durationMs || 0) / speed)),
           'X-Audio-Bitrate': String(ctx.bitrate || 0),
+          'X-Audio-Speed': String(speed),
+          'X-Audio-Preserve-Pitch': String(preservePitch),
+          'X-Audio-Atempo-Filter': atempoFilter,
         });
         if (req.method === 'HEAD') {
           audioStream.destroy();
           res.end();
         }
-      });
+      };
+
+      audioStream.once('info', onInfo);
+      audioStream.once('trackStart', onInfo);
 
       audioStream.on('error', err => {
         if (!headersSent && !res.writableEnded) {

@@ -14,7 +14,7 @@ const {
 
 function printHelp() {
   const help = `
-ytdlm v1.0.0 — Real-Time YouTube SABR UMP Audio Streamer & Downloader
+ytdlm v1.1.0 — Real-Time YouTube SABR UMP Audio Streamer & Downloader
 =====================================================================
 
 USAGE:
@@ -31,6 +31,8 @@ OPTIONS:
   -f, --format <itag>     Audio format: 251 (Guest ~160kbps Opus), 774 (TV Premium ~256kbps Opus), or bestaudio
   --guest                 Force anonymous Guest TVHTML5 mode (default for itag 251)
   --start <ms>            Start streaming at offset in milliseconds (default: 0)
+  --speed <0.10..4.00>    Playback speed float from 0.10 to 4.00 (supports "0,10".."4.00", default: 1.0)
+  --no-preserve-pitch     Use pure analog tape waveform resampling (0% audio slicing/chopping)
   -j, --dump-json         Output metadata in JSON format (yt-dlp compatible fields included)
   -n, --limit <num>       Max search results (default: 5)
   -p, --port <port>       HTTP server port for 'serve' (default: 8787)
@@ -39,8 +41,8 @@ OPTIONS:
   -h, --help              Show this help message
 
 EXAMPLES (Discord Bot / FFmpeg / MPV - Creative Commons Benchmark):
-  # Stream live audio directly to FFmpeg or Discord bot via stdout pipe:
-  ytdlm stream "https://www.youtube.com/watch?v=aqz-KE-bpKQ" | ffplay -i pipe:0 -nodisp
+  # Stream live audio directly to FFmpeg or Discord bot via stdout pipe (with 1.25x speed):
+  ytdlm stream "https://www.youtube.com/watch?v=aqz-KE-bpKQ" --speed 1.25 | ffplay -i pipe:0 -nodisp
 
   # Drop-in yt-dlp style stdout pipe:
   ytdlm "ytsearch:Big Buck Bunny Blender Foundation" -f 251 -o -
@@ -63,6 +65,8 @@ function parseArgs(argv) {
     guest: false,
     loop: false,
     startMs: 0,
+    speed: 1.0,
+    preservePitch: true,
     json: false,
     quiet: false,
     limit: 5,
@@ -85,6 +89,8 @@ function parseArgs(argv) {
       args.guest = true;
     } else if (a === '--loop' || a === '--infinite') {
       args.loop = true;
+    } else if (a === '--no-preserve-pitch' || a === '--tape') {
+      args.preservePitch = false;
     } else if (a === '-o' || a === '--output') {
       args.output = argv[++i] || null;
     } else if (a === '-f' || a === '--format' || a === '--itag') {
@@ -96,6 +102,8 @@ function parseArgs(argv) {
       }
     } else if (a === '--start' || a === '--start-ms') {
       args.startMs = Number(argv[++i] || 0);
+    } else if (a === '--speed' || a === '--rate') {
+      args.speed = argv[++i] || 1.0;
     } else if (a === '-n' || a === '--limit' || a === '--max-downloads') {
       args.limit = Number(argv[++i] || 5);
     } else if (a === '-p' || a === '--port') {
@@ -204,7 +212,12 @@ async function main() {
     }
 
     if (args.command === 'info') {
-      const info = await getInfo(target, { itag: args.itag, guest: args.guest });
+      const info = await getInfo(target, {
+        itag: args.itag,
+        guest: args.guest,
+        speed: args.speed,
+        preservePitch: args.preservePitch,
+      });
       const ytDlpCompat = {
         id: info.videoId,
         videoId: info.videoId,
@@ -213,6 +226,7 @@ async function main() {
         author: info.author,
         duration: info.durationSec,
         durationMs: info.durationMs,
+        effectiveDurationMs: info.effectiveDurationMs,
         webpage_url: info.url,
         thumbnail: info.thumbnail,
         format_id: String(info.itag),
@@ -224,6 +238,9 @@ async function main() {
         audio_channels: info.channels,
         isGuest: info.isGuest,
         mode: info.mode,
+        speed: info.speed,
+        preservePitch: info.preservePitch,
+        atempoFilter: info.atempoFilter,
         filename: info.filename,
       };
       console.log(JSON.stringify(ytDlpCompat, null, 2));
@@ -237,10 +254,12 @@ async function main() {
         guest: args.guest,
         startTimeMs: args.startMs,
         loop: args.loop,
+        speed: args.speed,
+        preservePitch: args.preservePitch,
         onProgress(p) {
           if (!args.quiet && outPath !== '-') {
             process.stderr.write(
-              `\r[ytdlm] Streaming itag=${p.itag}: ${p.percent}% (${(p.bytes / 1024).toFixed(0)} KB)`
+              `\r[ytdlm] Streaming itag=${p.itag} (${liveStream.speed || 1}x): ${p.percent}% (${(p.bytes / 1024).toFixed(0)} KB)`
             );
           }
         },
@@ -248,7 +267,7 @@ async function main() {
 
       liveStream.once('info', ctx => {
         log(
-          `[ytdlm] Live Stream [${ctx.mode}] "${ctx.title}" (${ctx.durationSec}s, itag=${ctx.itag}, ~${Math.round(
+          `[ytdlm] Live Stream [${ctx.mode}] "${ctx.title}" (${ctx.durationSec}s, itag=${ctx.itag}, speed=${ctx.speed || 1}x, ~${Math.round(
             ctx.bitrate / 1000
           )}kbps)`
         );
@@ -284,7 +303,12 @@ async function main() {
     if (args.command === 'download') {
       let outTarget = args.output;
       if (!outTarget) {
-        const info = await getInfo(target, { itag: args.itag, guest: args.guest });
+        const info = await getInfo(target, {
+          itag: args.itag,
+          guest: args.guest,
+          speed: args.speed,
+          preservePitch: args.preservePitch,
+        });
         outTarget = path.resolve(process.cwd(), sanitizeFilename(info.title, info.author, info.itag));
       }
 
@@ -292,6 +316,8 @@ async function main() {
       const res = await downloadAudio(target, outTarget, {
         itag: args.itag,
         guest: args.guest,
+        speed: args.speed,
+        preservePitch: args.preservePitch,
         onProgress(p) {
           if (!args.quiet && outTarget !== '-') {
             process.stderr.write(
@@ -302,7 +328,7 @@ async function main() {
       });
       if (!args.quiet && outTarget !== '-') process.stderr.write('\n');
       log(
-        `[ytdlm] Saved seekable WebM/Opus (${res.clustersCount} clusters, ${(res.sizeBytes / 1024 / 1024).toFixed(
+        `[ytdlm] Saved seekable WebM/Opus (${res.clustersCount} clusters, speed=${res.speed || 1}x, ${(res.sizeBytes / 1024 / 1024).toFixed(
           2
         )} MB) -> ${res.outputPath}`
       );
