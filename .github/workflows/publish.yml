@@ -87,6 +87,6 @@ jobs:
 
       - name: Trigger JitPack Build
         run: |
-          REF_NAME="${GITHUB_REF_NAME:-main-SNAPSHOT}"
+          REF_NAME="${GITHUB_REF_NAME:-v1.0.0}"
           echo "Triggering JitPack build for com.github.ytdlm:ytdlm:$REF_NAME"
-          curl -sS "https://jitpack.io/api/builds/com.github.ytdlm/ytdlm/${REF_NAME}" || true
+          curl -sS --max-time 120 "https://jitpack.io/com/github/ytdlm/ytdlm/${REF_NAME}/build.log" | tail -n 20 || true
