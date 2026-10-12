@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+target/
+*.egg-info/
+__pycache__/
+*.pyc
+*.opus
+*.webm
+*.m4a
+.DS_Store
+.env

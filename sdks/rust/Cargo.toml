@@ -1,0 +1,18 @@
+[package]
+name = "ytdlm-rs"
+version = "1.0.0"
+edition = "2021"
+authors = ["ytdlm <341343882+ytdlm@users.noreply.github.com>"]
+description = "Rust SDK for ytdlm Real-Time SABR UMP WebM/Opus Audio Streaming (Serenity / Songbird / Twilight Discord bots)"
+license = "MIT"
+repository = "https://github.com/ytdlm/ytdlm"
+homepage = "https://github.com/ytdlm/ytdlm"
+readme = "../../README.md"
+keywords = ["audio", "opus", "webm", "discord", "songbird"]
+categories = ["multimedia::audio", "network-programming"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["process", "io-util"] }
+urlencoding = "2.1"
