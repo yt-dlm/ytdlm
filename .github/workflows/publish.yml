@@ -76,35 +76,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Upgrade npm to latest
-        run: npm install -g npm@latest
+          registry-url: "https://registry.npmjs.org"
 
       - name: Run Verification Suite
         run: npm test
 
-      - name: Check NPM_TOKEN Secret
-        id: check_token
+      - name: Publish to npm
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "$NPM_TOKEN" ]; then
-            echo "has_token=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_token=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish to npm with NPM_TOKEN
-        if: steps.check_token.outputs.has_token == 'true'
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
-          npm publish --access public
-
-      - name: Publish to npm with OIDC Trusted Publisher
-        if: steps.check_token.outputs.has_token != 'true'
-        run: npm publish --provenance --access public
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public || npm publish --access public
 
   publish-pypi:
     name: Build & Publish Python SDK to PyPI
