@@ -77,20 +77,34 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Upgrade npm to latest (for OIDC Trusted Publishing)
+      - name: Upgrade npm to latest
         run: npm install -g npm@latest
 
       - name: Run Verification Suite
         run: npm test
 
-      - name: Publish to npm (OIDC Trusted Publisher or NPM_TOKEN)
+      - name: Check NPM_TOKEN Secret
+        id: check_token
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -n "$NPM_TOKEN" ]; then
-            npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
           fi
-          npm publish --provenance --access public
+
+      - name: Publish to npm with NPM_TOKEN
+        if: steps.check_token.outputs.has_token == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          npm publish --access public
+
+      - name: Publish to npm with OIDC Trusted Publisher
+        if: steps.check_token.outputs.has_token != 'true'
+        run: npm publish --provenance --access public
 
   publish-pypi:
     name: Build & Publish Python SDK to PyPI
