@@ -1,4 +1,4 @@
-name: Publish Multi-Language Packages (npm, PyPI, JitPack)
+name: Publish Multi-Language Packages (GitHub Release, npm, PyPI, JitPack)
 
 on:
   workflow_dispatch:
@@ -7,10 +7,60 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
+  github-release:
+    name: Build All Artifacts & Publish GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Verify & Pack Node.js Library (npm tarball)
+        run: |
+          npm test
+          npm pack
+
+      - name: Build Python SDK (Wheel & sdist)
+        working-directory: sdks/python
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Build Java SDK (Maven JAR)
+        run: mvn -B -f sdks/java/pom.xml clean package
+
+      - name: Create / Update GitHub Release with Multi-Language Binaries
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ytdlm-*.tgz
+            sdks/python/dist/*.whl
+            sdks/python/dist/*.tar.gz
+            sdks/java/target/*.jar
+
   publish-npm:
     name: Publish Node.js Package to npm
     runs-on: ubuntu-latest
@@ -68,25 +118,3 @@ jobs:
           packages-dir: sdks/python/dist/
           password: ${{ secrets.PYPI_API_TOKEN }}
           skip-existing: true
-
-  build-java-jitpack:
-    name: Verify Java SDK & Trigger JitPack Release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: "17"
-          distribution: "temurin"
-
-      - name: Build Java SDK with Maven
-        run: mvn -B -f sdks/java/pom.xml clean package
-
-      - name: Trigger JitPack Build
-        run: |
-          REF_NAME="${GITHUB_REF_NAME:-v1.0.0}"
-          echo "Triggering JitPack build for com.github.ytdlm:ytdlm:$REF_NAME"
-          curl -sS --max-time 120 "https://jitpack.io/com/github/ytdlm/ytdlm/${REF_NAME}/build.log" | tail -n 20 || true
