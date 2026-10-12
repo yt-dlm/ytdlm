@@ -1,0 +1,10 @@
+sdks/rust/target/
+sdks/python/dist/
+sdks/python/build/
+sdks/python/*.egg-info/
+sdks/java/target/
+target/
+.github/
+test/
+*.webm
+*.log

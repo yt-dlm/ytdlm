@@ -1,0 +1,4 @@
+jdk:
+  - openjdk17
+install:
+  - mvn -B -f sdks/java/pom.xml clean install -DskipTests

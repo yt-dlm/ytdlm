@@ -1,0 +1,92 @@
+name: Publish Multi-Language Packages (npm, PyPI, JitPack)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-npm:
+    name: Publish Node.js Package to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Upgrade npm to latest (for OIDC Trusted Publishing)
+        run: npm install -g npm@latest
+
+      - name: Run Verification Suite
+        run: npm test
+
+      - name: Publish to npm (OIDC Trusted Publisher or NPM_TOKEN)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          fi
+          npm publish --provenance --access public
+
+  publish-pypi:
+    name: Build & Publish Python SDK to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Python sdist and wheel
+        working-directory: sdks/python
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Publish to PyPI (OIDC Trusted Publisher or PYPI_API_TOKEN)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdks/python/dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
+
+  build-java-jitpack:
+    name: Verify Java SDK & Trigger JitPack Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Build Java SDK with Maven
+        run: mvn -B -f sdks/java/pom.xml clean package
+
+      - name: Trigger JitPack Build
+        run: |
+          REF_NAME="${GITHUB_REF_NAME:-main-SNAPSHOT}"
+          echo "Triggering JitPack build for com.github.ytdlm:ytdlm:$REF_NAME"
+          curl -sS "https://jitpack.io/api/builds/com.github.ytdlm/ytdlm/${REF_NAME}" || true

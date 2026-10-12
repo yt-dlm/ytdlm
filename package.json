@@ -19,7 +19,7 @@
     }
   },
   "bin": {
-    "ytdlm": "./bin/ytdlm.js"
+    "ytdlm": "bin/ytdlm.js"
   },
   "files": [
     "bin/",
