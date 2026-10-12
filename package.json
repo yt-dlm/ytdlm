@@ -1,5 +1,5 @@
 {
-  "name": "ytdlm",
+  "name": "@ytdlm/ytdlm",
   "version": "1.0.0",
   "description": "Real-time SABR UMP WebM/Opus audio streaming & seekable downloading library, CLI, and HTTP gateway for Discord music bots (Node.js, Python, Java, Rust).",
   "author": "ytdlm <341343882+ytdlm@users.noreply.github.com>",
