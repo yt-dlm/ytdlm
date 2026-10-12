@@ -64,6 +64,7 @@ jobs:
   publish-npm:
     name: Publish Node.js Package to npm
     runs-on: ubuntu-latest
+    environment: NPM_TOKEN
     permissions:
       contents: read
       id-token: write
