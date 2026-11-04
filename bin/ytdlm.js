@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
+const pkg = require('../package.json');
 const {
   streamAudio,
   downloadAudio,
@@ -14,7 +16,7 @@ const {
 
 function printHelp() {
   const help = `
-ytdlm v1.1.0 — Real-Time YouTube SABR UMP Audio Streamer & Downloader
+ytdlm v${pkg.version} — Real-Time YouTube SABR UMP Audio Streamer & Downloader
 =====================================================================
 
 USAGE:
@@ -38,6 +40,7 @@ OPTIONS:
   -p, --port <port>       HTTP server port for 'serve' (default: 8787)
   --host <host>           HTTP server bind address (default: 127.0.0.1)
   -q, --quiet             Suppress progress/status logs on stderr
+  -v, --version           Show version number
   -h, --help              Show this help message
 
 EXAMPLES (Discord Bot / FFmpeg / MPV - Creative Commons Benchmark):
@@ -73,6 +76,7 @@ function parseArgs(argv) {
     port: 8787,
     host: '127.0.0.1',
     help: false,
+    version: false,
   };
 
   const knownCommands = new Set(['stream', 'download', 'info', 'search', 'serve', 'auth']);
@@ -81,6 +85,8 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '-h' || a === '--help') {
       args.help = true;
+    } else if (a === '-v' || a === '--version') {
+      args.version = true;
     } else if (a === '-j' || a === '--dump-json' || a === '--json') {
       args.json = true;
     } else if (a === '-q' || a === '--quiet' || a === '--no-warnings') {
@@ -135,6 +141,10 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.version) {
+    console.log(`v${pkg.version}`);
+    process.exit(0);
+  }
   if (args.help || !args.command) {
     printHelp();
     process.exit(args.help ? 0 : 1);
@@ -287,7 +297,6 @@ async function main() {
           liveStream.on('end', resolve);
           liveStream.pipe(process.stdout);
         } else {
-          const fs = require('fs');
           const fileStream = fs.createWriteStream(path.resolve(outPath));
           fileStream.on('error', reject);
           fileStream.on('finish', () => {

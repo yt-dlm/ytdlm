@@ -8,7 +8,7 @@ Python SDK and `discord.py` voice helper for **[ytdlm](https://github.com/yt-dlm
 pip install ytdlm
 ```
 
-*(Requires the `ytdlm` Node.js CLI or HTTP Gateway: `npm install -g ytdlm`)*
+*(Requires the `ytdlm` Node.js CLI or HTTP Gateway: `npm install -g @ytdlm/ytdlm`)*
 
 ## Quick Start
 

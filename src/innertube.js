@@ -11,16 +11,19 @@ const TV_CLIENT_VERSION = '7.20260728.17.00';
 const TV_USER_AGENT =
   'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 TV Safari/538.1';
 
+// Official YouTube on TV public OAuth 2.0 application credentials
+// Publicly embedded across standard YouTube TV clients & open-source players
+const TV_CLIENT_ID =
+  process.env.YTDLM_OAUTH_CLIENT_ID ||
+  '861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com';
+
+const TV_CLIENT_SECRET =
+  process.env.YTDLM_OAUTH_CLIENT_SECRET ||
+  'SboVhoG9s0rNafixCSGGKXAT';
+
 const TV_OAUTH = {
-  clientId:
-    process.env.YTDLM_OAUTH_CLIENT_ID ||
-    Buffer.from(
-      'ODYxNTU2NzA4NDU0LWQ2ZGxtM2xoMDVpZGQ4bnBlazE4azZiZThiYTNvYzY4LmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t',
-      'base64'
-    ).toString('utf8'),
-  clientSecret:
-    process.env.YTDLM_OAUTH_CLIENT_SECRET ||
-    Buffer.from('U2JvVmhvRzlzMHJOYWZpeENTR0dLWEFU', 'base64').toString('utf8'),
+  clientId: TV_CLIENT_ID,
+  clientSecret: TV_CLIENT_SECRET,
   scope: 'http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content',
 };
 
@@ -33,11 +36,14 @@ function extractVideoId(input) {
   if (VIDEO_ID_RE.test(trimmed)) return trimmed;
 
   try {
-    const u = new URL(trimmed);
+    const rawUrl = trimmed.startsWith('http://') || trimmed.startsWith('https://')
+      ? trimmed
+      : `https://${trimmed}`;
+    const u = new URL(rawUrl);
     const v = u.searchParams.get('v');
     if (v && VIDEO_ID_RE.test(v)) return v;
 
-    if (u.hostname === 'youtu.be') {
+    if (u.hostname === 'youtu.be' || u.hostname.endsWith('.youtu.be')) {
       const id = u.pathname.split('/').filter(Boolean)[0];
       if (id && VIDEO_ID_RE.test(id)) return id;
     }
@@ -101,6 +107,7 @@ async function fetchFreshGuestVisitorData() {
         'User-Agent': TV_USER_AGENT,
         'Cache-Control': 'no-cache',
       },
+      signal: AbortSignal.timeout(8000),
     });
     if (resp.ok) {
       const text = await resp.text();
@@ -265,6 +272,7 @@ async function searchVideos(query, limit = 5) {
       ...(guestVd ? { 'X-Goog-Visitor-Id': guestVd } : {}),
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     },
+    signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
       context: {
         client: {
@@ -382,6 +390,7 @@ async function fetchTvPlayer(videoId, { guest = true, accessToken = null, sts = 
   const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
     method: 'POST',
     headers,
+    signal: AbortSignal.timeout(15000),
     body: JSON.stringify(payload),
   });
 
@@ -394,7 +403,8 @@ async function fetchTvPlayer(videoId, { guest = true, accessToken = null, sts = 
 async function fetchOembedMeta(videoId) {
   try {
     const res = await fetch(
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`,
+      { signal: AbortSignal.timeout(10000) }
     );
     if (res.ok) {
       return await res.json();

@@ -1,6 +1,6 @@
 {
   "name": "@ytdlm/ytdlm",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Real-time SABR UMP WebM/Opus audio streaming & seekable downloading library, CLI, and HTTP gateway for Discord music bots (Node.js, Python, Java, Rust).",
   "author": "yt-dlm",
   "homepage": "https://github.com/yt-dlm/ytdlm#readme",
@@ -24,7 +24,6 @@
   "files": [
     "bin/",
     "src/",
-    "sdks/",
     "LICENSE",
     "DISCLAIMER.md",
     "CONTRIBUTING.md",

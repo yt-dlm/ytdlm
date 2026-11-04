@@ -53,6 +53,7 @@ async function getPlayerContext(forceRefresh = false) {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
+        signal: AbortSignal.timeout(8000),
       });
       if (iframeRes.ok) {
         const text = await iframeRes.text();
@@ -76,6 +77,7 @@ async function getPlayerContext(forceRefresh = false) {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
+        signal: AbortSignal.timeout(12000),
       });
       if (!res.ok) {
         throw new Error(`Failed to fetch YouTube player base.js (${res.status})`);
@@ -165,7 +167,7 @@ async function getPlayerContext(forceRefresh = false) {
       String,
       Number,
       Boolean,
-      Function,
+      // Note: Host Function is intentionally omitted to prevent sandbox escape
       BigInt,
       parseInt,
       parseFloat,

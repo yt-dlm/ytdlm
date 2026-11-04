@@ -5,14 +5,16 @@ const {
   streamAudio,
   getInfo,
   startServer,
+  extractVideoId,
   normalizePlaybackSpeed,
   buildAtempoFilter,
   protobuf,
   webm,
+  transcode,
 } = require('../src/index');
 
 async function runOfflineUnitTests() {
-  console.log('=== [0/3] Running Deterministic Offline Engine Tests (Protobuf / UMP / WebM / Speed) ===');
+  console.log('=== [0/3] Running Deterministic Offline Engine Tests (Protobuf / UMP / WebM / Speed / Security) ===');
   const fmtMsg = protobuf.buildFormatIdMsg(251, '1700000000000000');
   assert(fmtMsg && fmtMsg.length > 4, 'Expected valid FormatId protobuf bytes');
 
@@ -50,7 +52,32 @@ async function runOfflineUnitTests() {
     buildAtempoFilter('0,10', { preservePitch: false }),
     'asetrate=4800,aresample=48000'
   );
-  console.log('Offline Protobuf, UMP, WebM & Speed (0.10x..4.00x) unit tests OK.');
+
+  // Video ID extractor tests
+  assert.strictEqual(extractVideoId('aqz-KE-bpKQ'), 'aqz-KE-bpKQ');
+  assert.strictEqual(extractVideoId('https://www.youtube.com/watch?v=aqz-KE-bpKQ'), 'aqz-KE-bpKQ');
+  assert.strictEqual(extractVideoId('https://music.youtube.com/watch?v=aqz-KE-bpKQ&feature=share'), 'aqz-KE-bpKQ');
+  assert.strictEqual(extractVideoId('https://youtu.be/aqz-KE-bpKQ?t=10'), 'aqz-KE-bpKQ');
+  assert.strictEqual(extractVideoId('youtu.be/aqz-KE-bpKQ'), 'aqz-KE-bpKQ');
+  assert.strictEqual(extractVideoId('https://www.youtube.com/shorts/aqz-KE-bpKQ'), 'aqz-KE-bpKQ');
+  assert.strictEqual(extractVideoId('https://www.youtube-nocookie.com/embed/aqz-KE-bpKQ'), 'aqz-KE-bpKQ');
+
+  // Security: Transcode path sanitization
+  assert.strictEqual(transcode.resolveFfmpegBinary('ffmpeg; rm -rf /'), null);
+  assert.strictEqual(transcode.resolveFfmpegBinary('ffmpeg | cat'), null);
+  assert.strictEqual(transcode.resolveFfmpegBinary('ffmpeg`id`'), null);
+
+  // Security: Check that sabr-stream.js source does not directly import child_process
+  const fs = require('fs');
+  const path = require('path');
+  const sabrSrc = fs.readFileSync(path.join(__dirname, '../src/sabr-stream.js'), 'utf8');
+  assert(!sabrSrc.includes("require('child_process')"), 'sabr-stream.js should not directly import child_process');
+
+  // Security: Check that innertube.js does not contain long base64 blobs
+  const innertubeSrc = fs.readFileSync(path.join(__dirname, '../src/innertube.js'), 'utf8');
+  assert(!innertubeSrc.includes("Buffer.from('ODYxNTU2NzA4NDU0"), 'innertube.js should not contain base64 credentials');
+
+  console.log('Offline Protobuf, UMP, WebM, Speed (0.10x..4.00x) & Security unit tests OK.');
 }
 
 async function runVerification() {
@@ -125,6 +152,12 @@ async function runVerification() {
     console.log(`Server started at ${baseUrl}`);
 
     try {
+      const healthResp = await fetch(`${baseUrl}/health`);
+      assert.strictEqual(healthResp.status, 200);
+      const healthJson = await healthResp.json();
+      assert.strictEqual(healthJson.ok, true);
+      assert.strictEqual(healthJson.version, '1.1.1');
+
       const infoResp = await fetch(`${baseUrl}/info?v=${testVideoId}&itag=251&guest=1&speed=1,50`);
       assert.strictEqual(infoResp.status, 200);
       const infoJson = await infoResp.json();

@@ -23,6 +23,7 @@ export const {
   webm,
   protobuf,
   decipher,
+  transcode,
 } = cjs;
 
 export default cjs;

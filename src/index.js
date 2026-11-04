@@ -20,6 +20,11 @@ const {
 const { decipherSabrUrl, getPlayerContext } = require('./decipher');
 const { startServer } = require('./server');
 const {
+  resolveFfmpegBinary,
+  createFfmpegSpeedStream,
+  transcodeWebmBuffer,
+} = require('./transcode');
+const {
   MIN_PLAYBACK_SPEED,
   MAX_PLAYBACK_SPEED,
   normalizePlaybackSpeed,
@@ -150,5 +155,10 @@ module.exports = {
   decipher: {
     decipherSabrUrl,
     getPlayerContext,
+  },
+  transcode: {
+    resolveFfmpegBinary,
+    createFfmpegSpeedStream,
+    transcodeWebmBuffer,
   },
 };

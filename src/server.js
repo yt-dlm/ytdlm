@@ -4,6 +4,7 @@ const http = require('http');
 const { createSabrAudioStream, createContinuousAudioStream } = require('./sabr-stream');
 const { resolveSabrContext, searchVideos } = require('./innertube');
 const { normalizePlaybackSpeed, buildAtempoFilter } = require('./webm');
+const { version } = require('../package.json');
 
 /**
  * Starts a local HTTP streaming & metadata gateway server for multi-language Discord bots
@@ -28,6 +29,7 @@ function startServer(options = {}) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -63,7 +65,7 @@ function startServer(options = {}) {
         JSON.stringify({
           ok: true,
           service: 'ytdlm',
-          version: '1.1.0',
+          version,
           endpoints: ['/stream?v=<id_or_url>&speed=1.0', '/info?v=<id_or_url>', '/search?q=<query>'],
         })
       );
