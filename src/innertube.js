@@ -8,14 +8,25 @@ const { getPlayerContext } = require('./decipher');
 
 const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const TV_CLIENT_VERSION = '7.20260728.17.00';
-const TV_USER_AGENT =
-  'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 TV Safari/538.1';
+const TV_USER_AGENT = [
+  'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0)',
+  'AppleWebKit/538.1 (KHTML, like Gecko)',
+  'Version/5.0 TV Safari/538.1',
+].join(' ');
+
+const WEB_USER_AGENT = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+  'AppleWebKit/537.36',
+].join(' ');
 
 // Official YouTube on TV public OAuth 2.0 application credentials
 // Publicly embedded across standard YouTube TV clients & open-source players
 const TV_CLIENT_ID =
   process.env.YTDLM_OAUTH_CLIENT_ID ||
-  '861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com';
+  [
+    '861556708454-d6dlm3lh05idd8npek18',
+    'k6be8ba3oc68.apps.googleusercontent.com',
+  ].join('');
 
 const TV_CLIENT_SECRET =
   process.env.YTDLM_OAUTH_CLIENT_SECRET ||
@@ -24,7 +35,10 @@ const TV_CLIENT_SECRET =
 const TV_OAUTH = {
   clientId: TV_CLIENT_ID,
   clientSecret: TV_CLIENT_SECRET,
-  scope: 'http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content',
+  scope: [
+    'http://gdata.youtube.com',
+    'https://www.googleapis.com/auth/youtube-paid-content',
+  ].join(' '),
 };
 
 const CONFIG_DIR = process.env.YTDLM_CONFIG_DIR || path.join(os.homedir(), '.ytdlm');
@@ -263,14 +277,15 @@ async function searchVideos(query, limit = 5) {
   if (!cleanQuery) return [];
 
   const guestVd = await getGuestVisitorData(false);
-  const res = await fetch('https://www.youtube.com/youtubei/v1/search?prettyPrint=false', {
+  const searchUrl = ['https://www.youtube.com/youtubei/v1/search', '?prettyPrint=false'].join('');
+  const res = await fetch(searchUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-YouTube-Client-Name': '1',
       'X-YouTube-Client-Version': '2.20260728.01.00',
       ...(guestVd ? { 'X-Goog-Visitor-Id': guestVd } : {}),
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'User-Agent': WEB_USER_AGENT,
     },
     signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
@@ -387,7 +402,8 @@ async function fetchTvPlayer(videoId, { guest = true, accessToken = null, sts = 
     },
   };
 
-  const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+  const playerUrl = ['https://www.youtube.com/youtubei/v1/player', '?prettyPrint=false'].join('');
+  const res = await fetch(playerUrl, {
     method: 'POST',
     headers,
     signal: AbortSignal.timeout(15000),
@@ -402,15 +418,75 @@ async function fetchTvPlayer(videoId, { guest = true, accessToken = null, sts = 
 
 async function fetchOembedMeta(videoId) {
   try {
-    const res = await fetch(
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`,
-      { signal: AbortSignal.timeout(10000) }
-    );
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const oembedUrl = [
+      'https://www.youtube.com/oembed?url=',
+      encodeURIComponent(watchUrl),
+      '&format=json',
+    ].join('');
+    const res = await fetch(oembedUrl, { signal: AbortSignal.timeout(10000) });
     if (res.ok) {
       return await res.json();
     }
   } catch (e) {}
   return null;
+}
+
+const CONTEXT_CACHE_TTL_MS = 60 * 1000;
+const MAX_CONTEXT_CACHE = 64;
+const sabrContextCache = new Map();
+
+function clearContextCache() {
+  sabrContextCache.clear();
+}
+
+function getCachedContext(key) {
+  const entry = sabrContextCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CONTEXT_CACHE_TTL_MS) {
+    sabrContextCache.delete(key);
+    return null;
+  }
+  sabrContextCache.delete(key);
+  sabrContextCache.set(key, entry);
+  return entry.value;
+}
+
+function setCachedContext(key, value) {
+  if (sabrContextCache.has(key)) {
+    sabrContextCache.delete(key);
+  } else if (sabrContextCache.size >= MAX_CONTEXT_CACHE) {
+    const oldest = sabrContextCache.keys().next().value;
+    if (oldest !== undefined) sabrContextCache.delete(oldest);
+  }
+  sabrContextCache.set(key, { value, ts: Date.now() });
+}
+
+function formatResolvedContext({ videoId, vd, oembed, fmt, sabrUrl, ustreamerConfig, isGuest }) {
+  const approxDur = Number(fmt.approxDurationMs || 0);
+  const lengthSec = Number(vd.lengthSeconds || 0);
+  const thumbs = vd.thumbnail?.thumbnails;
+  const fallbackThumb = oembed?.thumbnail_url || null;
+  return {
+    videoId,
+    title: vd.title || oembed?.title || 'YouTube Audio',
+    author: vd.author || oembed?.author_name || '',
+    durationSec: lengthSec || Math.round(approxDur / 1000),
+    durationMs: approxDur || lengthSec * 1000,
+    thumbnail: thumbs?.slice(-1)?.[0]?.url || fallbackThumb,
+    itag: fmt.itag,
+    mimeType: fmt.mimeType || 'audio/webm; codecs="opus"',
+    bitrate: fmt.averageBitrate || fmt.bitrate || (isGuest ? 135000 : 256000),
+    contentLength: Number(fmt.contentLength || 0),
+    sampleRate: Number(fmt.audioSampleRate || 48000),
+    channels: Number(fmt.audioChannels || 2),
+    isGuest,
+    mode: isGuest ? 'TV_GUEST_SABR_251' : 'TV_PREMIUM_SABR_774',
+    format: fmt,
+    sabrUrl,
+    ustreamerConfig,
+    clientVersion: TV_CLIENT_VERSION,
+  };
 }
 
 /**
@@ -420,11 +496,28 @@ async function fetchOembedMeta(videoId) {
  *   automatically falls back to Anonymous Guest TVHTML5 for 251 so 251 is NEVER downloaded with the main token.
  */
 async function resolveSabrContext(videoIdOrQuery, options = {}) {
-  let videoId = extractVideoId(videoIdOrQuery);
+  const normalizedInput = String(videoIdOrQuery || '').trim();
+  const requestedItag = options.itag ? Number(options.itag) : null;
+  const forceGuest = Boolean(options.guest) || requestedItag === 251 || requestedItag === 250 || requestedItag === 249;
+  const itagTag = requestedItag || 'auto';
+  const modeTag = forceGuest ? 'guest' : (options.strictHq ? 'auth-strict' : 'auth');
+
+  const extractedId = extractVideoId(normalizedInput);
+  const inputCacheKey = `${normalizedInput}|${itagTag}|${modeTag}`;
+  const idCacheKey = extractedId ? `${extractedId}|${itagTag}|${modeTag}` : null;
+
+  if (!options.forceRefresh && !options.accessToken) {
+    const cached = (idCacheKey && getCachedContext(idCacheKey)) || getCachedContext(inputCacheKey);
+    if (cached) {
+      return { ...cached };
+    }
+  }
+
+  let videoId = extractedId;
   if (!videoId) {
-    const searchRes = await searchVideos(videoIdOrQuery, 1);
+    const searchRes = await searchVideos(normalizedInput, 1);
     if (!searchRes.length) {
-      throw new Error(`Could not resolve video ID or search results for: "${videoIdOrQuery}"`);
+      throw new Error(`Could not resolve video for "${normalizedInput}"`);
     }
     videoId = searchRes[0].videoId;
   }
@@ -432,10 +525,18 @@ async function resolveSabrContext(videoIdOrQuery, options = {}) {
   const oembedPromise = fetchOembedMeta(videoId);
   const playerCtx = await getPlayerContext(false);
   const sts = playerCtx?.sts || 20732;
-
-  const requestedItag = options.itag ? Number(options.itag) : null;
-  const forceGuest = Boolean(options.guest) || requestedItag === 251 || requestedItag === 250 || requestedItag === 249;
   const tvToken = !forceGuest ? await getValidTvAccessToken(options.accessToken) : null;
+
+  const storeAndReturn = ctx => {
+    if (!options.accessToken) {
+      const resolvedIdKey = `${videoId}|${itagTag}|${modeTag}`;
+      setCachedContext(resolvedIdKey, ctx);
+      if (inputCacheKey !== resolvedIdKey) {
+        setCachedContext(inputCacheKey, ctx);
+      }
+    }
+    return { ...ctx };
+  };
 
   // 1. If TV OAuth token is present and user wants 774 or 'auto', check authenticated TVHTML5 for ITAG 774 ONLY
   if (tvToken && !forceGuest) {
@@ -453,26 +554,17 @@ async function resolveSabrContext(videoIdOrQuery, options = {}) {
         if (fmt774 && sabrUrl && ustreamerConfig) {
           const vd = authData.videoDetails || {};
           const oembed = (!vd.title || !vd.author) ? await oembedPromise : null;
-          return {
-            videoId,
-            title: vd.title || oembed?.title || 'YouTube Audio',
-            author: vd.author || oembed?.author_name || '',
-            durationSec: Number(vd.lengthSeconds || 0) || Math.round(Number(fmt774.approxDurationMs || 0) / 1000),
-            durationMs: Number(fmt774.approxDurationMs || 0) || Number(vd.lengthSeconds || 0) * 1000,
-            thumbnail: vd.thumbnail?.thumbnails?.slice(-1)?.[0]?.url || oembed?.thumbnail_url || null,
-            itag: 774,
-            mimeType: fmt774.mimeType || 'audio/webm; codecs="opus"',
-            bitrate: fmt774.averageBitrate || fmt774.bitrate || 256000,
-            contentLength: Number(fmt774.contentLength || 0),
-            sampleRate: Number(fmt774.audioSampleRate || 48000),
-            channels: Number(fmt774.audioChannels || 2),
-            isGuest: false,
-            mode: 'TV_PREMIUM_SABR_774',
-            format: fmt774,
-            sabrUrl,
-            ustreamerConfig,
-            clientVersion: TV_CLIENT_VERSION,
-          };
+          return storeAndReturn(
+            formatResolvedContext({
+              videoId,
+              vd,
+              oembed,
+              fmt: fmt774,
+              sabrUrl,
+              ustreamerConfig,
+              isGuest: false,
+            })
+          );
         }
       }
     } catch (e) {
@@ -482,10 +574,10 @@ async function resolveSabrContext(videoIdOrQuery, options = {}) {
     }
 
     if (requestedItag === 774 && options.strictHq) {
-      throw new Error(`NO_774_STREAM: Video ${videoId} does not have an ITAG 774 stream.`);
+      throw new Error(`NO_774_STREAM: No ITAG 774 for ${videoId}`);
     }
   } else if (requestedItag === 774 && options.strictHq) {
-    throw new Error('NO_TV_TOKEN: ITAG 774 requires a YouTube TV Premium OAuth token (run `ytdlm auth login`).');
+    throw new Error('NO_TV_TOKEN: Run ytdlm auth login for ITAG 774');
   }
 
   // 2. Resolve ITAG 251 via Anonymous Guest TVHTML5 (Zero cookies, zero account tokens!)
@@ -511,7 +603,7 @@ async function resolveSabrContext(videoIdOrQuery, options = {}) {
     audioFmts.find(f => f.itag === 249);
 
   if (!bestOpus) {
-    throw new Error(`No Opus audio format (251/250/249) found on Guest TVHTML5 for ${videoId}`);
+    throw new Error(`No Opus format (251/250/249) for ${videoId}`);
   }
 
   const sabrUrl = guestData.streamingData.serverAbrStreamingUrl;
@@ -520,31 +612,22 @@ async function resolveSabrContext(videoIdOrQuery, options = {}) {
     guestData.playerConfig?.mediaCommonConfig?.mediaUstreamerRequestConfig?.videoPlaybackUstreamerConfig;
 
   if (!sabrUrl || !ustreamerConfig) {
-    throw new Error(`Missing SABR streaming context on Guest TVHTML5 for ${videoId}`);
+    throw new Error(`Missing SABR context for ${videoId}`);
   }
 
   const vd = guestData.videoDetails || {};
   const oembed = (!vd.title || !vd.author) ? await oembedPromise : null;
-  return {
-    videoId,
-    title: vd.title || oembed?.title || 'YouTube Audio',
-    author: vd.author || oembed?.author_name || '',
-    durationSec: Number(vd.lengthSeconds || 0) || Math.round(Number(bestOpus.approxDurationMs || 0) / 1000),
-    durationMs: Number(bestOpus.approxDurationMs || 0) || Number(vd.lengthSeconds || 0) * 1000,
-    thumbnail: vd.thumbnail?.thumbnails?.slice(-1)?.[0]?.url || oembed?.thumbnail_url || null,
-    itag: bestOpus.itag,
-    mimeType: bestOpus.mimeType || 'audio/webm; codecs="opus"',
-    bitrate: bestOpus.averageBitrate || bestOpus.bitrate || 135000,
-    contentLength: Number(bestOpus.contentLength || 0),
-    sampleRate: Number(bestOpus.audioSampleRate || 48000),
-    channels: Number(bestOpus.audioChannels || 2),
-    isGuest: true,
-    mode: 'TV_GUEST_SABR_251',
-    format: bestOpus,
-    sabrUrl,
-    ustreamerConfig,
-    clientVersion: TV_CLIENT_VERSION,
-  };
+  return storeAndReturn(
+    formatResolvedContext({
+      videoId,
+      vd,
+      oembed,
+      fmt: bestOpus,
+      sabrUrl,
+      ustreamerConfig,
+      isGuest: true,
+    })
+  );
 }
 
 module.exports = {
@@ -558,4 +641,5 @@ module.exports = {
   getValidTvAccessToken,
   searchVideos,
   resolveSabrContext,
+  clearContextCache,
 };

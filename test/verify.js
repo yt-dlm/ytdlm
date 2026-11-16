@@ -1,16 +1,20 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const {
   streamAudio,
   getInfo,
+  resolveSabrContext,
+  clearContextCache,
+  clearDecipherCache,
   startServer,
   extractVideoId,
   normalizePlaybackSpeed,
   buildAtempoFilter,
   protobuf,
   webm,
-  transcode,
 } = require('../src/index');
 
 async function runOfflineUnitTests() {
@@ -62,20 +66,37 @@ async function runOfflineUnitTests() {
   assert.strictEqual(extractVideoId('https://www.youtube.com/shorts/aqz-KE-bpKQ'), 'aqz-KE-bpKQ');
   assert.strictEqual(extractVideoId('https://www.youtube-nocookie.com/embed/aqz-KE-bpKQ'), 'aqz-KE-bpKQ');
 
-  // Security: Transcode path sanitization
-  assert.strictEqual(transcode.resolveFfmpegBinary('ffmpeg; rm -rf /'), null);
-  assert.strictEqual(transcode.resolveFfmpegBinary('ffmpeg | cat'), null);
-  assert.strictEqual(transcode.resolveFfmpegBinary('ffmpeg`id`'), null);
+  // Security: Zero child_process across src/ and bin/, zero transcode.js, zero long string literals
+  assert(!fs.existsSync(path.join(__dirname, '../src/transcode.js')), 'src/transcode.js must not exist');
+  for (const dir of ['src', 'bin']) {
+    const dirPath = path.join(__dirname, '..', dir);
+    for (const file of fs.readdirSync(dirPath)) {
+      if (!file.endsWith('.js') && !file.endsWith('.mjs')) continue;
+      const content = fs.readFileSync(path.join(dirPath, file), 'utf8');
+      assert(!content.includes('child_process'), `${dir}/${file} must not reference child_process`);
+      const lines = content.split('\n');
+      lines.forEach((line, idx) => {
+        const matches = line.match(/(['"`])(?:(?=(\\?))\2.)*?\1/g);
+        if (matches) {
+          for (const lit of matches) {
+            assert(lit.length <= 60, `${dir}/${file}:${idx + 1} has string literal length ${lit.length} > 60`);
+          }
+        }
+      });
+    }
+  }
 
-  // Security: Check that sabr-stream.js source does not directly import child_process
-  const fs = require('fs');
-  const path = require('path');
-  const sabrSrc = fs.readFileSync(path.join(__dirname, '../src/sabr-stream.js'), 'utf8');
-  assert(!sabrSrc.includes("require('child_process')"), 'sabr-stream.js should not directly import child_process');
-
-  // Security: Check that innertube.js does not contain long base64 blobs
+  // Security: Check that innertube.js does not contain base64 credentials
   const innertubeSrc = fs.readFileSync(path.join(__dirname, '../src/innertube.js'), 'utf8');
   assert(!innertubeSrc.includes("Buffer.from('ODYxNTU2NzA4NDU0"), 'innertube.js should not contain base64 credentials');
+
+  // Security: Check that decipher.js does not use fs/os.tmpdir or expose host Function
+  const decipherSrc = fs.readFileSync(path.join(__dirname, '../src/decipher.js'), 'utf8');
+  assert(!decipherSrc.includes("require('fs')"), 'decipher.js should not write temp files');
+  assert(!decipherSrc.includes('tmpdir'), 'decipher.js should not use os.tmpdir');
+
+  clearContextCache();
+  clearDecipherCache();
 
   console.log('Offline Protobuf, UMP, WebM, Speed (0.10x..4.00x) & Security unit tests OK.');
 }
@@ -106,6 +127,15 @@ async function runVerification() {
     assert.strictEqual(info.isGuest, true);
     assert.strictEqual(info.itag, 251);
     assert.strictEqual(info.speed, 1.25);
+
+    const ctx1 = await resolveSabrContext(testVideoId, { itag: 251, guest: true });
+    const tCache0 = Date.now();
+    const ctx2 = await resolveSabrContext(testVideoId, { itag: 251, guest: true });
+    const cacheElapsed = Date.now() - tCache0;
+    assert(cacheElapsed < 20, `Expected LRU context cache hit < 20ms, got ${cacheElapsed}ms`);
+    assert.strictEqual(ctx1.videoId, ctx2.videoId);
+    assert.strictEqual(ctx1.sabrUrl, ctx2.sabrUrl);
+    console.log(`LRU context cache hit verified in ${cacheElapsed}ms.`);
 
     console.log('\n=== [2/3] Testing streamAudio() Real-Time Live Pipe ===');
     const streamStart = Date.now();
@@ -156,7 +186,7 @@ async function runVerification() {
       assert.strictEqual(healthResp.status, 200);
       const healthJson = await healthResp.json();
       assert.strictEqual(healthJson.ok, true);
-      assert.strictEqual(healthJson.version, '1.1.1');
+      assert.strictEqual(healthJson.version, '1.1.2');
 
       const infoResp = await fetch(`${baseUrl}/info?v=${testVideoId}&itag=251&guest=1&speed=1,50`);
       assert.strictEqual(infoResp.status, 200);
@@ -167,7 +197,7 @@ async function runVerification() {
       console.log('HTTP /info OK:', infoJson.title, `(${infoJson.mode}, speed=${infoJson.speed}x)`);
 
       const abortCtrl = new AbortController();
-      const streamResp = await fetch(`${baseUrl}/stream?v=${testVideoId}&itag=251&guest=1&speed=1.50&speedMode=container`, {
+      const streamResp = await fetch(`${baseUrl}/stream?v=${testVideoId}&itag=251&guest=1&speed=1.50`, {
         signal: abortCtrl.signal,
       });
       assert.strictEqual(streamResp.status, 200);

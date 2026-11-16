@@ -19,11 +19,6 @@ const {
 } = require('./webm');
 const { decipherSabrUrl } = require('./decipher');
 const { resolveSabrContext, sanitizeFilename } = require('./innertube');
-const {
-  resolveFfmpegBinary,
-  createFfmpegSpeedStream,
-  transcodeWebmBuffer,
-} = require('./transcode');
 
 /**
  * Creates a real-time Node.js Readable stream of WebM/Opus audio from YouTube SABR UMP.
@@ -39,7 +34,6 @@ const {
  * @param {number} [options.startTimeMs] - Optional start time offset in milliseconds (default 0)
  * @param {number|string} [options.speed=1.0] - Playback speed float from 0.10 to 4.00 (supports "0,10".."4.00")
  * @param {boolean} [options.preservePitch=true] - Keep original pitch (true) or use pure zero-chopping tape resampling (false)
- * @param {'auto'|'ffmpeg'|'container'} [options.speedMode='auto'] - Speed engine mode
  * @param {number} [options.highWaterMark] - Stream buffer highWaterMark (default 512 KB)
  * @param {Function} [options.onProgress] - Callback ({ bufferedMs, durationMs, percent, bytes })
  * @returns {Readable & { getInfo: () => Promise<object>, speed: number, preservePitch: boolean, atempoFilter: string }}
@@ -48,18 +42,6 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
   const speed = normalizePlaybackSpeed(options.speed);
   const preservePitch = options.preservePitch !== false;
   const atempoFilter = buildAtempoFilter(speed, { preservePitch });
-
-  if (speed !== 1.0 && !options._rawForSpeed && options.speedMode !== 'container') {
-    const ffmpegBin = resolveFfmpegBinary(options.ffmpegPath);
-    if (ffmpegBin) {
-      const rawStream = createSabrAudioStream(videoIdOrQuery, {
-        ...options,
-        speed: 1.0,
-        _rawForSpeed: true,
-      });
-      return createFfmpegSpeedStream(rawStream, speed, options, ffmpegBin);
-    }
-  }
 
   let session = null;
   let aborted = false;
@@ -90,6 +72,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
   });
 
   stream.speed = speed;
+  stream.preservePitch = preservePitch;
   stream.atempoFilter = atempoFilter;
   stream.getInfo = () => infoPromise;
 
@@ -142,6 +125,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
       const ctx = await resolveSabrContext(session.videoId, {
         ...options,
         itag: session.targetItag,
+        forceRefresh: true,
       });
       const ustreamerBytes = pbDecodeBase64ToU8(ctx.ustreamerConfig);
       if (!ustreamerBytes || ustreamerBytes.length < 16) return false;
@@ -194,6 +178,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
       };
 
       ctx.speed = speed;
+      ctx.preservePitch = preservePitch;
       ctx.atempoFilter = atempoFilter;
       ctx.effectiveDurationMs = Math.round((ctx.durationMs || 0) / speed);
 
@@ -507,74 +492,19 @@ async function downloadSabrAudio(videoIdOrQuery, outputPath = null, options = {}
   const preservePitch = options.preservePitch !== false;
   const atempoFilter = buildAtempoFilter(speed, { preservePitch });
 
-  let built = buildSeekableWebmFile(
+  const built = buildSeekableWebmFile(
     assembler.initSegment,
     assembler.clusters,
     assembler.clusterDurations,
     durMs,
-    speed !== 1.0 && options.speedMode === 'container' ? speed : 1.0
+    speed
   );
   if (!built || !built.buffer) {
-    throw new Error('Failed to assemble WebM audio file from SABR UMP segments');
-  }
-
-  if (speed !== 1.0 && options.speedMode !== 'container') {
-    const ffmpegBin = resolveFfmpegBinary(options.ffmpegPath);
-    if (ffmpegBin) {
-      const transcodedBuf = transcodeWebmBuffer(
-        built.buffer,
-        speed,
-        atempoFilter,
-        ctx.itag,
-        ffmpegBin
-      );
-      if (transcodedBuf && transcodedBuf.length > 64) {
-        const speedAssembler = new WebmClusterAssembler();
-        speedAssembler.feed(new Uint8Array(transcodedBuf));
-        speedAssembler.flush();
-        const rebuilt = buildSeekableWebmFile(
-          speedAssembler.initSegment,
-          speedAssembler.clusters,
-          speedAssembler.clusterDurations,
-          Math.round(durMs / speed),
-          1.0
-        );
-        if (rebuilt && rebuilt.buffer) {
-          built = {
-            ...rebuilt,
-            speed,
-            sourceDurationMs: durMs,
-          };
-        } else {
-          built = {
-            buffer: transcodedBuf,
-            durationMs: Math.round(durMs / speed),
-            sourceDurationMs: durMs,
-            speed,
-            clustersCount: speedAssembler.clustersCount || built.clustersCount,
-          };
-        }
-      } else {
-        built = buildSeekableWebmFile(
-          assembler.initSegment,
-          assembler.clusters,
-          assembler.clusterDurations,
-          durMs,
-          speed
-        );
-      }
-    } else {
-      built = buildSeekableWebmFile(
-        assembler.initSegment,
-        assembler.clusters,
-        assembler.clusterDurations,
-        durMs,
-        speed
-      );
-    }
+    throw new Error('Failed to assemble WebM audio from SABR UMP');
   }
 
   ctx.speed = speed;
+  ctx.preservePitch = preservePitch;
   ctx.atempoFilter = atempoFilter;
   ctx.effectiveDurationMs = built.durationMs;
 

@@ -1,6 +1,6 @@
 # ytdlm (Python SDK)
 
-Python SDK and `discord.py` voice helper for **[ytdlm](https://github.com/yt-dlm/ytdlm)** — a Real-Time SABR UMP WebM/Opus (`251` / `774`) Audio Streaming & Seekable Downloading Engine.
+Python SDK and streaming helper for **[ytdlm](https://github.com/yt-dlm/ytdlm)** — a Real-Time SABR UMP WebM/Opus (`251` / `774`) Audio Streaming & Seekable Downloading Engine.
 
 ## Installation
 

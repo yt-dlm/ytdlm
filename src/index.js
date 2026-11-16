@@ -16,14 +16,10 @@ const {
   getValidTvAccessToken,
   searchVideos,
   resolveSabrContext,
+  clearContextCache,
 } = require('./innertube');
-const { decipherSabrUrl, getPlayerContext } = require('./decipher');
+const { decipherSabrUrl, getPlayerContext, clearDecipherCache } = require('./decipher');
 const { startServer } = require('./server');
-const {
-  resolveFfmpegBinary,
-  createFfmpegSpeedStream,
-  transcodeWebmBuffer,
-} = require('./transcode');
 const {
   MIN_PLAYBACK_SPEED,
   MAX_PLAYBACK_SPEED,
@@ -108,6 +104,11 @@ class Ytdlm {
   buildAtempoFilter(speed, options = {}) {
     return buildAtempoFilter(speed, options);
   }
+
+  clearCache() {
+    clearContextCache();
+    clearDecipherCache();
+  }
 }
 
 module.exports = {
@@ -120,6 +121,8 @@ module.exports = {
   downloadSabrAudio,
   getInfo,
   resolveSabrContext,
+  clearContextCache,
+  clearDecipherCache,
   searchVideos,
   extractVideoId,
   sanitizeFilename,
@@ -155,10 +158,6 @@ module.exports = {
   decipher: {
     decipherSabrUrl,
     getPlayerContext,
-  },
-  transcode: {
-    resolveFfmpegBinary,
-    createFfmpegSpeedStream,
-    transcodeWebmBuffer,
+    clearDecipherCache,
   },
 };

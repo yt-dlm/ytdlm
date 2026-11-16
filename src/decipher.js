@@ -1,14 +1,40 @@
 'use strict';
 
 const vm = require('vm');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
 
-const CACHE_DIR = path.join(os.tmpdir(), 'ytdlm-player-cache');
+const WEB_USER_AGENT = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+  'AppleWebKit/537.36',
+].join(' ');
+
+const MAX_N_CACHE = 512;
+const nTokenCache = new Map();
 
 let cachedPlayerState = null;
 let loadingPromise = null;
+
+function getCachedNToken(cacheKey) {
+  if (!nTokenCache.has(cacheKey)) return null;
+  const val = nTokenCache.get(cacheKey);
+  nTokenCache.delete(cacheKey);
+  nTokenCache.set(cacheKey, val);
+  return val;
+}
+
+function setCachedNToken(cacheKey, val) {
+  if (nTokenCache.has(cacheKey)) {
+    nTokenCache.delete(cacheKey);
+  } else if (nTokenCache.size >= MAX_N_CACHE) {
+    const oldest = nTokenCache.keys().next().value;
+    if (oldest !== undefined) nTokenCache.delete(oldest);
+  }
+  nTokenCache.set(cacheKey, val);
+}
+
+function clearDecipherCache() {
+  nTokenCache.clear();
+  cachedPlayerState = null;
+}
 
 function createDummyDomElement() {
   const fn = function () {};
@@ -43,16 +69,10 @@ async function getPlayerContext(forceRefresh = false) {
   }
 
   loadingPromise = (async () => {
-    try {
-      fs.mkdirSync(CACHE_DIR, { recursive: true });
-    } catch (e) {}
-
     let playerHash = '5203c085';
     try {
       const iframeRes = await fetch('https://www.youtube.com/iframe_api', {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
+        headers: { 'User-Agent': WEB_USER_AGENT },
         signal: AbortSignal.timeout(8000),
       });
       if (iframeRes.ok) {
@@ -62,35 +82,24 @@ async function getPlayerContext(forceRefresh = false) {
       }
     } catch (e) {}
 
-    const cacheFile = path.join(CACHE_DIR, `base_${playerHash}.js`);
-    let baseJs = null;
-
-    if (!forceRefresh && fs.existsSync(cacheFile)) {
-      try {
-        baseJs = fs.readFileSync(cacheFile, 'utf8');
-      } catch (e) {}
+    const baseJsUrl = [
+      'https://www.youtube.com/s/player/',
+      playerHash,
+      '/player_ias.vflset/en_US/base.js',
+    ].join('');
+    const res = await fetch(baseJsUrl, {
+      headers: { 'User-Agent': WEB_USER_AGENT },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) {
+      throw new Error(`Player script HTTP ${res.status}`);
     }
-
-    if (!baseJs || baseJs.length < 100000) {
-      const baseJsUrl = `https://www.youtube.com/s/player/${playerHash}/player_ias.vflset/en_US/base.js`;
-      const res = await fetch(baseJsUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to fetch YouTube player base.js (${res.status})`);
-      }
-      baseJs = await res.text();
-      try {
-        fs.writeFileSync(cacheFile, baseJs, 'utf8');
-      } catch (e) {}
-    }
+    const baseJs = await res.text();
 
     const stsMatch = baseJs.match(/signatureTimestamp\s*:\s*(\d+)/);
     const sts = stsMatch ? Number(stsMatch[1]) : 20732;
 
+    const watchUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
     const sandbox = {
       window: null,
       self: null,
@@ -98,9 +107,9 @@ async function getPlayerContext(forceRefresh = false) {
       _yt_player: {},
       yt: {},
       ytcfg: { get: () => undefined, set: () => {} },
-      location: new URL('https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
+      location: new URL(watchUrl),
       navigator: {
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        userAgent: WEB_USER_AGENT,
         mediaCapabilities: {},
       },
       document: {
@@ -115,7 +124,7 @@ async function getPlayerContext(forceRefresh = false) {
         body: createDummyDomElement(),
         head: createDummyDomElement(),
         cookie: '',
-        location: new URL('https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
+        location: new URL(watchUrl),
       },
       Element: function () {},
       HTMLElement: function () {},
@@ -221,17 +230,32 @@ async function decipherSabrUrl(rawUrl) {
   if (!ytp) return rawUrl;
 
   try {
-    const origN = new URL(rawUrl).searchParams.get('n');
+    const parsedUrl = new URL(rawUrl);
+    const origN = parsedUrl.searchParams.get('n');
+    if (!origN) return rawUrl;
+
+    const cacheKey = `${state.playerHash}:${origN}`;
+    const cachedN = getCachedNToken(cacheKey);
+    if (cachedN) {
+      parsedUrl.searchParams.set('n', cachedN);
+      return parsedUrl.toString();
+    }
+
+    const extractValidResult = v => {
+      if (typeof v !== 'string' || !v.startsWith('https://')) return null;
+      const newN = new URL(v).searchParams.get('n');
+      if (newN && newN !== origN) {
+        setCachedNToken(cacheKey, newN);
+        return v;
+      }
+      return null;
+    };
+
     if (state.cachedCtor && state.cachedMethod) {
       try {
         const inst = new state.cachedCtor(rawUrl, true);
-        const v = inst[state.cachedMethod]();
-        if (typeof v === 'string' && v.startsWith('https://')) {
-          const newN = new URL(v).searchParams.get('n');
-          if (!origN || (newN && newN !== origN)) {
-            return v;
-          }
-        }
+        const hit = extractValidResult(inst[state.cachedMethod]());
+        if (hit) return hit;
       } catch (e) {}
     }
 
@@ -246,14 +270,11 @@ async function decipherSabrUrl(rawUrl) {
           const inst = new fn(rawUrl, true);
           for (const mk of Object.getOwnPropertyNames(fn.prototype)) {
             if (mk !== 'constructor' && typeof inst[mk] === 'function' && inst[mk].length === 0) {
-              const v = inst[mk]();
-              if (typeof v === 'string' && v.startsWith('https://')) {
-                const newN = new URL(v).searchParams.get('n');
-                if (!origN || (newN && newN !== origN)) {
-                  state.cachedCtor = fn;
-                  state.cachedMethod = mk;
-                  return v;
-                }
+              const hit = extractValidResult(inst[mk]());
+              if (hit) {
+                state.cachedCtor = fn;
+                state.cachedMethod = mk;
+                return hit;
               }
             }
           }
@@ -268,4 +289,5 @@ async function decipherSabrUrl(rawUrl) {
 module.exports = {
   getPlayerContext,
   decipherSabrUrl,
+  clearDecipherCache,
 };

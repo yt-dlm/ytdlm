@@ -1,7 +1,7 @@
 {
   "name": "@ytdlm/ytdlm",
-  "version": "1.1.1",
-  "description": "Real-time SABR UMP WebM/Opus audio streaming & seekable downloading library, CLI, and HTTP gateway for Discord music bots (Node.js, Python, Java, Rust).",
+  "version": "1.1.2",
+  "description": "Real-time SABR UMP WebM/Opus audio streaming & seekable downloading library, CLI, and HTTP gateway (Node.js, Python, Java, Rust).",
   "author": "yt-dlm",
   "homepage": "https://github.com/yt-dlm/ytdlm#readme",
   "repository": {
@@ -40,8 +40,8 @@
     "opus",
     "webm",
     "audio-stream",
-    "discord-bot",
-    "discord-music",
+    "audio-downloader",
+    "streaming",
     "lavaplayer",
     "ytdlm"
   ],

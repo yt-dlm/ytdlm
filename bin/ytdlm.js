@@ -15,48 +15,42 @@ const {
 } = require('../src/index');
 
 function printHelp() {
-  const help = `
-ytdlm v${pkg.version} — Real-Time YouTube SABR UMP Audio Streamer & Downloader
-=====================================================================
-
-USAGE:
-  ytdlm stream <url_or_query> [options]        Stream live WebM/Opus audio to stdout (or file)
-  ytdlm <url_or_query> -o - [options]          yt-dlp compatible stdout live pipe
-  ytdlm download <url_or_query> [-o file.opus] Download seekable .opus with SeekHead + Cues
-  ytdlm info <url_or_query> [-j]               Print track & SABR stream metadata
-  ytdlm search <query> [-n 5] [-j]             Search YouTube videos (Guest mode)
-  ytdlm serve [--port 8787] [--host 127.0.0.1] Start HTTP Streaming & Metadata Server
-  ytdlm auth <login|status|logout>             Manage optional TV OAuth token (for ITAG 774)
-
-OPTIONS:
-  -o, --output <path>     Output file path, directory, or '-' for stdout live stream
-  -f, --format <itag>     Audio format: 251 (Guest ~160kbps Opus), 774 (TV Premium ~256kbps Opus), or bestaudio
-  --guest                 Force anonymous Guest TVHTML5 mode (default for itag 251)
-  --start <ms>            Start streaming at offset in milliseconds (default: 0)
-  --speed <0.10..4.00>    Playback speed float from 0.10 to 4.00 (supports "0,10".."4.00", default: 1.0)
-  --no-preserve-pitch     Use pure analog tape waveform resampling (0% audio slicing/chopping)
-  -j, --dump-json         Output metadata in JSON format (yt-dlp compatible fields included)
-  -n, --limit <num>       Max search results (default: 5)
-  -p, --port <port>       HTTP server port for 'serve' (default: 8787)
-  --host <host>           HTTP server bind address (default: 127.0.0.1)
-  -q, --quiet             Suppress progress/status logs on stderr
-  -v, --version           Show version number
-  -h, --help              Show this help message
-
-EXAMPLES (Discord Bot / FFmpeg / MPV - Creative Commons Benchmark):
-  # Stream live audio directly to FFmpeg or Discord bot via stdout pipe (with 1.25x speed):
-  ytdlm stream "https://www.youtube.com/watch?v=aqz-KE-bpKQ" --speed 1.25 | ffplay -i pipe:0 -nodisp
-
-  # Drop-in yt-dlp style stdout pipe:
-  ytdlm "ytsearch:Big Buck Bunny Blender Foundation" -f 251 -o -
-
-  # Download 100% seekable .opus file (with patched Duration, SeekHead & Cues):
-  ytdlm download "https://www.youtube.com/watch?v=aqz-KE-bpKQ" -o ./music/
-
-  # Start HTTP streaming micro-server for Java (Lavaplayer), Python, or Rust bots:
-  ytdlm serve --port 8787
-`;
-  process.stderr.write(help.trimStart());
+  const lines = [
+    `ytdlm v${pkg.version} — Real-Time YouTube SABR UMP Audio`,
+    '================================================',
+    '',
+    'USAGE:',
+    '  ytdlm stream <url_or_query> [options]',
+    '  ytdlm <url_or_query> -o - [options]',
+    '  ytdlm download <url_or_query> [-o file.opus]',
+    '  ytdlm info <url_or_query> [-j]',
+    '  ytdlm search <query> [-n 5] [-j]',
+    '  ytdlm serve [--port 8787] [--host 127.0.0.1]',
+    '  ytdlm auth <login|status|logout>',
+    '',
+    'OPTIONS:',
+    '  -o, --output <path>   File, dir, or - for stdout',
+    '  -f, --format <itag>   251 (Guest) or 774 (TV)',
+    '  --guest               Force Guest TVHTML5 mode',
+    '  --start <ms>          Start offset in ms',
+    '  --speed <0.10..4.00>  Speed float (e.g. 1.25)',
+    '  --no-preserve-pitch   Analog tape resampling mode',
+    '  -j, --dump-json       Output yt-dlp JSON info',
+    '  -n, --limit <num>     Max search results (def: 5)',
+    '  -p, --port <port>     Server port (def: 8787)',
+    '  --host <host>         Server bind host (127.0.0.1)',
+    '  -q, --quiet           Suppress stderr logs',
+    '  -v, --version         Show version number',
+    '  -h, --help            Show this help message',
+    '',
+    'EXAMPLES (Creative Commons Benchmark aqz-KE-bpKQ):',
+    '  ytdlm stream "aqz-KE-bpKQ" --speed 1.25 | mpv -',
+    '  ytdlm "ytsearch:Big Buck Bunny" -f 251 -o -',
+    '  ytdlm download "aqz-KE-bpKQ" -o ./music/',
+    '  ytdlm serve --port 8787',
+    '',
+  ];
+  process.stderr.write(lines.join('\n'));
 }
 
 function parseArgs(argv) {
@@ -183,12 +177,12 @@ async function main() {
       }
       if (sub === 'login') {
         const dc = await auth.requestTvDeviceCode();
-        console.log(`\n=== YouTube TV OAuth Login (For ITAG 774 High-Quality Audio) ===`);
+        console.log('\n=== YouTube TV OAuth Login (ITAG 774) ===');
         console.log(`1. Open URL : ${dc.verification_url}`);
         console.log(`2. Enter Code: ${dc.user_code}`);
-        console.log(`Waiting for authorization...`);
+        console.log('Waiting for authorization...');
         await auth.pollTvDeviceToken(dc.device_code, dc.interval || 5, dc.expires_in || 300);
-        console.log(`Login successful! Saved token to ~/.ytdlm/auth.json`);
+        console.log('Login ok! Saved to ~/.ytdlm/auth.json');
         return;
       }
       throw new Error(`Unknown auth subcommand: ${sub}`);
@@ -196,10 +190,10 @@ async function main() {
 
     if (args.command === 'serve') {
       const srv = await startServer({ port: args.port, host: args.host });
-      log(`[ytdlm] HTTP Streaming & Metadata Server listening on ${srv.url}`);
-      log(`  • Live Opus Stream : ${srv.url}/stream?v=aqz-KE-bpKQ`);
-      log(`  • Track Metadata   : ${srv.url}/info?v=aqz-KE-bpKQ`);
-      log(`  • YouTube Search   : ${srv.url}/search?q=Big+Buck+Bunny+Blender`);
+      log(`[ytdlm] Server listening on ${srv.url}`);
+      log(`  • Stream   : ${srv.url}/stream?v=aqz-KE-bpKQ`);
+      log(`  • Info     : ${srv.url}/info?v=aqz-KE-bpKQ`);
+      log(`  • Search   : ${srv.url}/search?q=Big+Buck+Bunny`);
       return;
     }
 
@@ -215,7 +209,8 @@ async function main() {
         console.log(JSON.stringify(results, null, 2));
       } else {
         for (const [idx, r] of results.entries()) {
-          console.log(`${idx + 1}. [${r.videoId}] ${r.title} (${r.durationText || 'N/A'}) - ${r.author}`);
+          const meta = `(${r.durationText || 'N/A'}) - ${r.author}`;
+          console.log(`${idx + 1}. [${r.videoId}] ${r.title} ${meta}`);
         }
       }
       return;
@@ -268,19 +263,19 @@ async function main() {
         preservePitch: args.preservePitch,
         onProgress(p) {
           if (!args.quiet && outPath !== '-') {
-            process.stderr.write(
-              `\r[ytdlm] Streaming itag=${p.itag} (${liveStream.speed || 1}x): ${p.percent}% (${(p.bytes / 1024).toFixed(0)} KB)`
-            );
+            const kb = (p.bytes / 1024).toFixed(0);
+            const spd = liveStream.speed || 1;
+            const stat = `${p.percent}% (${kb} KB)`;
+            process.stderr.write(`\r[ytdlm] ${p.itag} (${spd}x): ${stat}`);
           }
         },
       });
 
       liveStream.once('info', ctx => {
-        log(
-          `[ytdlm] Live Stream [${ctx.mode}] "${ctx.title}" (${ctx.durationSec}s, itag=${ctx.itag}, speed=${ctx.speed || 1}x, ~${Math.round(
-            ctx.bitrate / 1000
-          )}kbps)`
-        );
+        const kbps = Math.round(ctx.bitrate / 1000);
+        const meta = `${ctx.durationSec}s, itag=${ctx.itag}`;
+        const spd = `speed=${ctx.speed || 1}x, ~${kbps}kbps`;
+        log(`[ytdlm] [${ctx.mode}] "${ctx.title}" (${meta}, ${spd})`);
       });
 
       await new Promise((resolve, reject) => {
@@ -329,18 +324,17 @@ async function main() {
         preservePitch: args.preservePitch,
         onProgress(p) {
           if (!args.quiet && outTarget !== '-') {
-            process.stderr.write(
-              `\r[ytdlm] Downloading [${resInfoMode(p.itag)}] ${p.percent}% (${(p.bytes / 1024 / 1024).toFixed(2)} MB)`
-            );
+            const mb = (p.bytes / 1024 / 1024).toFixed(2);
+            const mode = resInfoMode(p.itag);
+            process.stderr.write(`\r[ytdlm] [${mode}] ${p.percent}% (${mb} MB)`);
           }
         },
       });
       if (!args.quiet && outTarget !== '-') process.stderr.write('\n');
-      log(
-        `[ytdlm] Saved seekable WebM/Opus (${res.clustersCount} clusters, speed=${res.speed || 1}x, ${(res.sizeBytes / 1024 / 1024).toFixed(
-          2
-        )} MB) -> ${res.outputPath}`
-      );
+      const mb = (res.sizeBytes / 1024 / 1024).toFixed(2);
+      const spd = res.speed || 1;
+      const stats = `${res.clustersCount} clusters, ${spd}x, ${mb} MB`;
+      log(`[ytdlm] Saved (${stats}) -> ${res.outputPath}`);
       return;
     }
   } catch (err) {

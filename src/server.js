@@ -7,8 +7,8 @@ const { normalizePlaybackSpeed, buildAtempoFilter } = require('./webm');
 const { version } = require('../package.json');
 
 /**
- * Starts a local HTTP streaming & metadata gateway server for multi-language Discord bots
- * (Lavaplayer, Lavalink, JDA, discord.py, Songbird/Rust, Go, C#).
+ * Starts a local HTTP streaming & metadata gateway server for multi-language media applications
+ * (Node.js, Python, Java, Rust, Go, C#).
  *
  * Endpoints:
  *   GET /stream?v=<url_or_id_or_query>&itag=251&guest=1&start=0&speed=1.0
@@ -110,8 +110,10 @@ function startServer(options = {}) {
 
       try {
         const ctx = await resolveSabrContext(v, { itag, guest });
-        const speedParam = speed !== 1.0 ? `&speed=${speed}` : '';
-        const pitchQuery = !preservePitch ? '&preservePitch=0' : '';
+        const qs = new URLSearchParams({ v: ctx.videoId, itag: String(ctx.itag) });
+        if (speed !== 1.0) qs.set('speed', String(speed));
+        if (!preservePitch) qs.set('preservePitch', '0');
+        const streamUrl = `http://${host}:${port}/stream?${qs.toString()}`;
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(
           JSON.stringify({
@@ -133,7 +135,7 @@ function startServer(options = {}) {
             speed,
             preservePitch,
             atempoFilter,
-            streamUrl: `http://${host}:${port}/stream?v=${encodeURIComponent(ctx.videoId)}&itag=${ctx.itag}${speedParam}${pitchQuery}`,
+            streamUrl,
           })
         );
       } catch (err) {
@@ -152,7 +154,6 @@ function startServer(options = {}) {
       const loopParam = parsedUrl.searchParams.get('loop');
       const loop = loopParam === '1' || loopParam === 'true';
       const speed = normalizePlaybackSpeed(parsedUrl.searchParams.get('speed') || parsedUrl.searchParams.get('rate') || 1.0);
-      const speedMode = parsedUrl.searchParams.get('speedMode') || 'auto';
       const pitchParam = parsedUrl.searchParams.get('preservePitch');
       const tapeParam = parsedUrl.searchParams.get('tape');
       const preservePitch = tapeParam === '1' || tapeParam === 'true' ? false : pitchParam !== '0' && pitchParam !== 'false';
@@ -168,25 +169,17 @@ function startServer(options = {}) {
         ? v.split(',').map(s => s.trim()).filter(Boolean)
         : null;
 
+      const streamOpts = {
+        itag,
+        guest,
+        startTimeMs,
+        loop,
+        speed,
+        preservePitch,
+      };
       const audioStream = trackList && trackList.length > 1
-        ? createContinuousAudioStream(trackList, {
-            itag,
-            guest,
-            startTimeMs,
-            loop,
-            speed,
-            speedMode,
-            preservePitch,
-          })
-        : createSabrAudioStream(v, {
-            itag,
-            guest,
-            startTimeMs,
-            loop,
-            speed,
-            speedMode,
-            preservePitch,
-          });
+        ? createContinuousAudioStream(trackList, streamOpts)
+        : createSabrAudioStream(v, streamOpts);
 
       let headersSent = false;
 

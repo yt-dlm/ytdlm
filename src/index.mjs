@@ -10,6 +10,8 @@ export const {
   downloadSabrAudio,
   getInfo,
   resolveSabrContext,
+  clearContextCache,
+  clearDecipherCache,
   searchVideos,
   extractVideoId,
   sanitizeFilename,
@@ -23,7 +25,6 @@ export const {
   webm,
   protobuf,
   decipher,
-  transcode,
 } = cjs;
 
 export default cjs;
