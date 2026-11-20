@@ -34,6 +34,7 @@ const {
   buildFormatIdMsg,
   buildClientInfoMsg,
   buildAbrRequestBytes,
+  isAllowedSabrRedirectUrl,
   demuxUmp,
 } = require('./protobuf');
 
@@ -153,6 +154,7 @@ module.exports = {
     buildFormatIdMsg,
     buildClientInfoMsg,
     buildAbrRequestBytes,
+    isAllowedSabrRedirectUrl,
     demuxUmp,
   },
   decipher: {

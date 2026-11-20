@@ -1,6 +1,6 @@
 {
   "name": "@ytdlm/ytdlm",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Real-time SABR UMP WebM/Opus audio streaming & seekable downloading library, CLI, and HTTP gateway (Node.js, Python, Java, Rust).",
   "author": "yt-dlm",
   "homepage": "https://github.com/yt-dlm/ytdlm#readme",

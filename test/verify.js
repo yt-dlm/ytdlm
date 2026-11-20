@@ -3,6 +3,10 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
+const { createIsolatedVmContext } = require('../src/decipher');
+const { pbWrapLengthDelimited } = require('../src/protobuf');
+const { parseArgs } = require('../bin/ytdlm');
 const {
   streamAudio,
   getInfo,
@@ -94,6 +98,116 @@ async function runOfflineUnitTests() {
   const decipherSrc = fs.readFileSync(path.join(__dirname, '../src/decipher.js'), 'utf8');
   assert(!decipherSrc.includes("require('fs')"), 'decipher.js should not write temp files');
   assert(!decipherSrc.includes('tmpdir'), 'decipher.js should not use os.tmpdir');
+  assert(decipherSrc.includes('codeGeneration'), 'decipher.js must restrict VM codeGeneration');
+
+  // Security: Pure-realm VM isolation (no host Function escape, no string codegen)
+  const vmCtx = createIsolatedVmContext();
+  assert.notStrictEqual(
+    vm.runInContext('this.constructor.constructor', vmCtx),
+    Function,
+    'VM must not expose host Function constructor'
+  );
+  assert.notStrictEqual(
+    vm.runInContext('atob.constructor', vmCtx),
+    Function,
+    'VM shims must not expose host Function constructor'
+  );
+  assert.strictEqual(vm.runInContext('typeof process', vmCtx), 'undefined');
+  assert.throws(
+    () => vm.runInContext('new Function("return 1")()', vmCtx),
+    { name: 'EvalError' }
+  );
+
+  // Security: CLI `--` option terminator blocks flag injection & supports hyphen video IDs
+  const parsedInject = parseArgs(['stream', '-f', '251', '-o', '-', '-q', '--', '-o', '/tmp/pwned']);
+  assert.strictEqual(parsedInject.command, 'stream');
+  assert.strictEqual(parsedInject.output, '-');
+  assert.deepStrictEqual(parsedInject.positional, ['-o', '/tmp/pwned']);
+  const parsedHyphenId = parseArgs(['info', '-f', '251', '--', '-2RAq5o5pwc']);
+  assert.strictEqual(parsedHyphenId.command, 'info');
+  assert.deepStrictEqual(parsedHyphenId.positional, ['-2RAq5o5pwc']);
+
+  // Security: SabrRedirect strict hostname & scheme allowlist
+  assert.strictEqual(
+    protobuf.isAllowedSabrRedirectUrl('https://rr1---sn-oxun-h55e.googlevideo.com/videoplayback?expire=1'),
+    true
+  );
+  assert.strictEqual(
+    protobuf.isAllowedSabrRedirectUrl('https://redirector.googlevideo.com/videoplayback?id=abc'),
+    true
+  );
+  for (const badUrl of [
+    'http://rr1.googlevideo.com/videoplayback?a=1',
+    'https://127.0.0.1/videoplayback?a=1',
+    'https://evil.com/videoplayback?a=1',
+    'https://evil-googlevideo.com/videoplayback?a=1',
+    'https://.googlevideo.com/videoplayback?a=1',
+    'https://rr1.googlevideo.com:8443/videoplayback?a=1',
+    'https://user:pass@rr1.googlevideo.com/videoplayback?a=1',
+    'https://rr1.googlevideo.com/otherpath?a=1',
+  ]) {
+    assert.strictEqual(protobuf.isAllowedSabrRedirectUrl(badUrl), false, `Should reject ${badUrl}`);
+  }
+  const makeRedirectUmp = url => {
+    const pb = pbWrapLengthDelimited(1, new TextEncoder().encode(url));
+    return new Uint8Array([43, pb.length, ...pb]);
+  };
+  const evilDemux = protobuf.demuxUmp(makeRedirectUmp('https://evil.com/videoplayback?a=1'), 251);
+  assert.strictEqual(evilDemux.redirectUrl, null);
+  assert.strictEqual(evilDemux.sabrError, true);
+  const okRedirect = 'https://rr1.googlevideo.com/videoplayback?a=1';
+  const okDemux = protobuf.demuxUmp(makeRedirectUmp(okRedirect), 251);
+  assert.strictEqual(okDemux.redirectUrl, okRedirect);
+  assert.strictEqual(okDemux.sabrError, null);
+
+  // Security: HTTP Server hardening (default no-CORS, port:0 binding, 405, 414, track cap, timing-safe API key)
+  const defaultSrv = await startServer({ port: 0, host: '127.0.0.1' });
+  try {
+    assert(defaultSrv.port > 0 && defaultSrv.port === defaultSrv.server.address().port);
+    assert.strictEqual(defaultSrv.url, `http://127.0.0.1:${defaultSrv.port}`);
+    const hRes = await fetch(`${defaultSrv.url}/health`);
+    assert.strictEqual(hRes.status, 200);
+    assert.strictEqual(hRes.headers.get('access-control-allow-origin'), null);
+    assert.strictEqual(hRes.headers.get('x-content-type-options'), 'nosniff');
+
+    const postRes = await fetch(`${defaultSrv.url}/info?v=aqz-KE-bpKQ`, { method: 'POST' });
+    assert.strictEqual(postRes.status, 405);
+
+    const manyTracks = Array.from({ length: 51 }, (_, i) => `vid${i}`).join(',');
+    const capRes = await fetch(`${defaultSrv.url}/stream?v=${encodeURIComponent(manyTracks)}`);
+    assert.strictEqual(capRes.status, 400);
+
+    const longRes = await fetch(`${defaultSrv.url}/info?v=${'a'.repeat(4100)}`);
+    assert.strictEqual(longRes.status, 414);
+  } finally {
+    await defaultSrv.close();
+  }
+
+  const authSrv = await startServer({
+    port: 0,
+    host: '127.0.0.1',
+    apiKey: 'test-secret-key',
+    corsOrigin: 'http://localhost:3000',
+  });
+  try {
+    const noKeyRes = await fetch(`${authSrv.url}/health`);
+    assert.strictEqual(noKeyRes.status, 401);
+    const badLenKeyRes = await fetch(`${authSrv.url}/health`, {
+      headers: { 'X-API-Key': 'short' },
+    });
+    assert.strictEqual(badLenKeyRes.status, 401);
+    const okKeyRes = await fetch(`${authSrv.url}/health`, {
+      headers: { 'X-API-Key': 'test-secret-key' },
+    });
+    assert.strictEqual(okKeyRes.status, 200);
+    assert.strictEqual(okKeyRes.headers.get('access-control-allow-origin'), 'http://localhost:3000');
+    const bearerRes = await fetch(`${authSrv.url}/health`, {
+      headers: { Authorization: 'Bearer test-secret-key' },
+    });
+    assert.strictEqual(bearerRes.status, 200);
+  } finally {
+    await authSrv.close();
+  }
 
   clearContextCache();
   clearDecipherCache();
@@ -186,7 +300,7 @@ async function runVerification() {
       assert.strictEqual(healthResp.status, 200);
       const healthJson = await healthResp.json();
       assert.strictEqual(healthJson.ok, true);
-      assert.strictEqual(healthJson.version, '1.1.2');
+      assert.strictEqual(healthJson.version, '1.1.3');
 
       const infoResp = await fetch(`${baseUrl}/info?v=${testVideoId}&itag=251&guest=1&speed=1,50`);
       assert.strictEqual(infoResp.status, 200);

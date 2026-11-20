@@ -8,6 +8,7 @@ const {
   buildFormatIdMsg,
   buildClientInfoMsg,
   buildAbrRequestBytes,
+  isAllowedSabrRedirectUrl,
   demuxUmp,
 } = require('./protobuf');
 const {
@@ -19,6 +20,9 @@ const {
 } = require('./webm');
 const { decipherSabrUrl } = require('./decipher');
 const { resolveSabrContext, sanitizeFilename } = require('./innertube');
+
+const SABR_FETCH_TIMEOUT_MS = 20000;
+const MAX_SABR_REDIRECTS = 10;
 
 /**
  * Creates a real-time Node.js Readable stream of WebM/Opus audio from YouTube SABR UMP.
@@ -135,6 +139,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
       session.decipheredUrl = await decipherSabrUrl(ctx.sabrUrl);
       session.playbackCookie = null;
       session.errorCount = 0;
+      session.redirectCount = 0;
       session.refreshCount = (session.refreshCount || 0) + 1;
       return true;
     } catch (e) {
@@ -173,6 +178,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
         nextTargetMs: startOffsetMs,
         lastMissingMs: undefined,
         errorCount: 0,
+        redirectCount: 0,
         refreshCount: 0,
         abortCtrl: null,
       };
@@ -231,6 +237,11 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
     session.inFlight = true;
     const abortCtrl = new AbortController();
     session.abortCtrl = abortCtrl;
+    let timedOut = false;
+    const reqTimer = setTimeout(() => {
+      timedOut = true;
+      abortCtrl.abort();
+    }, SABR_FETCH_TIMEOUT_MS);
 
     try {
       const reqBytes = buildAbrRequestBytes(session, targetMs);
@@ -249,6 +260,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
         session.errorCount++;
         if (session.errorCount >= 3 && (session.refreshCount || 0) < 5) {
           const refreshed = await refreshSabrSession();
+          if (aborted) return;
           if (refreshed) {
             session.inFlight = false;
             setImmediate(pump);
@@ -271,9 +283,16 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
         session.playbackCookie = demuxed.nextPlaybackCookie;
       }
       if (demuxed.redirectUrl) {
+        if (!isAllowedSabrRedirectUrl(demuxed.redirectUrl)) {
+          throw new Error('Blocked SABR redirect URL');
+        }
+        session.redirectCount = (session.redirectCount || 0) + 1;
+        if (session.redirectCount > MAX_SABR_REDIRECTS) {
+          throw new Error('Too many SABR redirects');
+        }
         session.decipheredUrl = demuxed.redirectUrl;
         session.inFlight = false;
-        pump();
+        setImmediate(pump);
         return;
       }
 
@@ -282,6 +301,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
           session.errorCount++;
           if (session.errorCount >= 3 && (session.refreshCount || 0) < 5) {
             const refreshed = await refreshSabrSession();
+            if (aborted) return;
             if (refreshed) {
               session.inFlight = false;
               setImmediate(pump);
@@ -297,6 +317,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
         }
       } else {
         session.errorCount = 0;
+        session.redirectCount = 0;
         for (const seg of demuxed.segments) {
           if (seg.isInit) {
             session.hasInit = true;
@@ -312,11 +333,29 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
         }
       }
     } catch (err) {
+      if (timedOut && !aborted) {
+        session.errorCount++;
+        if (session.errorCount >= 3 && (session.refreshCount || 0) < 5) {
+          const refreshed = await refreshSabrSession();
+          if (aborted) return;
+          if (refreshed) {
+            setImmediate(pump);
+            return;
+          }
+        }
+        if (session.errorCount >= 6) {
+          stream.destroy(new Error(`SABR POST timeout for ${session.videoId}`));
+          return;
+        }
+        setTimeout(pump, 250);
+        return;
+      }
       if (!aborted && err?.name !== 'AbortError') {
         stream.destroy(err);
         return;
       }
     } finally {
+      clearTimeout(reqTimer);
       if (session) {
         session.abortCtrl = null;
         session.inFlight = false;
@@ -343,6 +382,7 @@ function createSabrAudioStream(videoIdOrQuery, options = {}) {
       session.reachedEof = false;
       session.nextTargetMs = startOffsetMs;
       session.lastMissingMs = undefined;
+      session.redirectCount = 0;
       stream.emit('loop', session.ctx);
       setImmediate(pump);
       return;
@@ -384,6 +424,7 @@ async function downloadSabrAudio(videoIdOrQuery, outputPath = null, options = {}
     nextTargetMs: 0,
     lastMissingMs: undefined,
     errorCount: 0,
+    redirectCount: 0,
   };
 
   const durMs = session.durationMs || 0;
@@ -421,27 +462,49 @@ async function downloadSabrAudio(videoIdOrQuery, outputPath = null, options = {}
     u.searchParams.set('alr', 'yes');
     u.searchParams.set('rn', String(++session.rn));
 
-    const resp = await fetch(u.toString(), {
-      method: 'POST',
-      body: reqBytes,
-    });
+    let buf;
+    try {
+      const resp = await fetch(u.toString(), {
+        method: 'POST',
+        body: reqBytes,
+        signal: AbortSignal.timeout(SABR_FETCH_TIMEOUT_MS),
+      });
 
-    if (!resp.ok) {
-      session.errorCount++;
-      if (session.errorCount >= 4) {
-        throw new Error(`SABR POST HTTP ${resp.status} for ${ctx.videoId}`);
+      if (!resp.ok) {
+        session.errorCount++;
+        if (session.errorCount >= 4) {
+          throw new Error(`SABR POST HTTP ${resp.status} for ${ctx.videoId}`);
+        }
+        await new Promise(r => setTimeout(r, 200));
+        continue;
       }
-      await new Promise(r => setTimeout(r, 200));
-      continue;
+
+      buf = new Uint8Array(await resp.arrayBuffer());
+    } catch (err) {
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        session.errorCount++;
+        if (session.errorCount >= 4) {
+          throw new Error(`SABR POST timeout for ${ctx.videoId}`);
+        }
+        await new Promise(r => setTimeout(r, 250));
+        continue;
+      }
+      throw err;
     }
 
-    const buf = new Uint8Array(await resp.arrayBuffer());
     const demuxed = demuxUmp(buf, session.targetItag);
 
     if (demuxed.nextPlaybackCookie) {
       session.playbackCookie = demuxed.nextPlaybackCookie;
     }
     if (demuxed.redirectUrl) {
+      if (!isAllowedSabrRedirectUrl(demuxed.redirectUrl)) {
+        throw new Error('Blocked SABR redirect URL');
+      }
+      session.redirectCount = (session.redirectCount || 0) + 1;
+      if (session.redirectCount > MAX_SABR_REDIRECTS) {
+        throw new Error('Too many SABR redirects');
+      }
       decipheredUrl = demuxed.redirectUrl;
       continue;
     }
@@ -459,6 +522,7 @@ async function downloadSabrAudio(videoIdOrQuery, outputPath = null, options = {}
     }
 
     session.errorCount = 0;
+    session.redirectCount = 0;
     for (const seg of demuxed.segments) {
       if (seg.isInit) {
         session.hasInit = true;

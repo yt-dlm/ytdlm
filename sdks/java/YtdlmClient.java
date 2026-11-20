@@ -154,7 +154,6 @@ public class YtdlmClient {
         double spd = normalizeSpeed(speed);
         List<String> cmd = buildCommand(
                 "stream",
-                videoUrlOrQuery,
                 "-f", String.valueOf(itag),
                 "--start", String.valueOf(Math.max(0L, startTimeMs)),
                 "--speed", String.format(Locale.US, "%.2f", spd),
@@ -164,6 +163,8 @@ public class YtdlmClient {
         if (this.forceGuest) {
             cmd.add("--guest");
         }
+        cmd.add("--");
+        cmd.add(videoUrlOrQuery);
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectError(ProcessBuilder.Redirect.DISCARD);
         return pb.start();
@@ -181,10 +182,12 @@ public class YtdlmClient {
      * Fetches JSON metadata via CLI (`ytdlm info <url> -j -q`).
      */
     public String getInfoJsonViaCli(String videoUrlOrQuery) throws IOException, InterruptedException {
-        List<String> cmd = buildCommand("info", videoUrlOrQuery, "-f", String.valueOf(this.defaultItag), "-j", "-q");
+        List<String> cmd = buildCommand("info", "-f", String.valueOf(this.defaultItag), "-j", "-q");
         if (this.forceGuest) {
             cmd.add("--guest");
         }
+        cmd.add("--");
+        cmd.add(videoUrlOrQuery);
         Process proc = new ProcessBuilder(cmd).start();
         StringBuilder sb = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(

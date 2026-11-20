@@ -74,9 +74,18 @@ function parseArgs(argv) {
   };
 
   const knownCommands = new Set(['stream', 'download', 'info', 'search', 'serve', 'auth']);
+  let endOfOptions = false;
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (endOfOptions) {
+      args.positional.push(a);
+      continue;
+    }
+    if (a === '--') {
+      endOfOptions = true;
+      continue;
+    }
     if (a === '-h' || a === '--help') {
       args.help = true;
     } else if (a === '-v' || a === '--version') {
@@ -347,4 +356,8 @@ function resInfoMode(itag) {
   return itag === 774 ? 'TV_PREMIUM_774' : `TV_GUEST_${itag}`;
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { parseArgs };

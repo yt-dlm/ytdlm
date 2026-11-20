@@ -220,8 +220,9 @@ cargo add ytdlm-rs
 | `--no-preserve-pitch`, `--tape` | Enable **Zero-Chopping Analog Tape Resampling** (`0%` audio slicing/dropping). |
 | `--loop` | Loop the audio stream infinitely (24/7 mode). |
 | `-q, --quiet` | Suppress progress/status logs on `stderr`. |
-| `-v, --version` | Show package version number (`1.1.2`). |
+| `-v, --version` | Show package version number (`1.1.3`). |
 | `-h, --help` | Show CLI help message and syntax examples. |
+| `--` | End of CLI options; treats all following arguments as positional (safe for hyphen-prefixed IDs). |
 
 ### CLI Examples (Using Creative Commons 3.0 Benchmark: Blender Foundation)
 
@@ -324,7 +325,10 @@ ytdlm serve --port 8787 --host 127.0.0.1
 4. **`GET /health`** — Health check endpoint.
 
 > [!TIP]
-> Set `YTDLM_API_KEY=your_secret` to require `X-API-Key` or `Authorization: Bearer` authentication on all HTTP endpoints.
+> Set `YTDLM_API_KEY=your_secret` to require `X-API-Key` or `Authorization: Bearer` authentication (verified with timing-safe comparison) on all HTTP endpoints.
+
+> [!NOTE]
+> **CORS is disabled by default (`v1.1.3+`)** so local gateways are not exposed to arbitrary web origins. If a browser frontend calls `ytdlm serve` cross-origin, explicitly opt in via `YTDLM_CORS_ORIGIN=https://your-app.example` (or `startServer({ corsOrigin: 'https://your-app.example' })`).
 
 ---
 

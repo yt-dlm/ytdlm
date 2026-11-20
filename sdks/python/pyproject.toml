@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ytdlm"
-version = "1.1.2"
+version = "1.1.3"
 description = "Python SDK for ytdlm — Real-Time SABR UMP WebM/Opus Audio Streamer & Downloader"
 readme = "README.md"
 requires-python = ">=3.8"

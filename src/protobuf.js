@@ -165,6 +165,23 @@ function buildAbrRequestBytes(session, playerTimeMs) {
   return pbConcatChunks(parts);
 }
 
+function isAllowedSabrRedirectUrl(candidate) {
+  if (typeof candidate !== 'string') return false;
+  if (candidate.length < 25 || candidate.length >= 4096) return false;
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== 'https:') return false;
+    if (u.username || u.password) return false;
+    if (u.port && u.port !== '443') return false;
+    if (u.pathname !== '/videoplayback' || !u.search) return false;
+    const host = u.hostname.toLowerCase();
+    if (!host || host.startsWith('.')) return false;
+    return host.endsWith('.googlevideo.com') || host.endsWith('.youtube.com');
+  } catch (e) {
+    return false;
+  }
+}
+
 function demuxUmp(u8, targetItag = 251) {
   const headersById = new Map();
   let nextPlaybackCookie = null;
@@ -236,7 +253,7 @@ function demuxUmp(u8, targetItag = 251) {
       let foundRedirect = false;
       if (f1 && f1.wireType === 2 && f1.valueLen > 24 && f1.valueLen < 4096) {
         const candidate = new TextDecoder().decode(u8.subarray(f1.valueOff, f1.valueOff + f1.valueLen));
-        if (/^https:\/\/[^/\s]+\/videoplayback\?/.test(candidate)) {
+        if (isAllowedSabrRedirectUrl(candidate)) {
           redirectUrl = candidate;
           foundRedirect = true;
         }
@@ -281,5 +298,6 @@ module.exports = {
   buildFormatIdMsg,
   buildClientInfoMsg,
   buildAbrRequestBytes,
+  isAllowedSabrRedirectUrl,
   demuxUmp,
 };

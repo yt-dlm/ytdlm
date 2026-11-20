@@ -105,6 +105,13 @@ class TrackInfo:
         )
 
 
+def _validate_http_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"Unsupported URL scheme or host: {url!r}")
+    return url.rstrip("/")
+
+
 class YtdlmClient:
     def __init__(
         self,
@@ -128,7 +135,7 @@ class YtdlmClient:
             resolved_server = binary_path
             binary_path = None
         self.binary_path = binary_path or shutil.which("ytdlm") or "ytdlm"
-        self.server_url = resolved_server.rstrip("/") if resolved_server else None
+        self.server_url = _validate_http_url(resolved_server) if resolved_server else None
         self.default_itag = default_itag
         self.force_guest = force_guest
         self.default_speed = normalize_playback_speed(default_speed)
@@ -164,13 +171,15 @@ class YtdlmClient:
                     "speed": str(spd),
                 }
             )
-            with urllib.request.urlopen(f"{self.server_url}/info?{params}", timeout=15) as resp:
+            req_url = _validate_http_url(self.server_url) + f"/info?{params}"
+            with urllib.request.urlopen(req_url, timeout=15) as resp:  # nosec B310
                 data = json.loads(resp.read().decode("utf-8"))
                 return TrackInfo.from_dict(data)
 
-        cmd = self._build_cmd("info", url_or_query, "-f", str(target_itag), "--speed", str(spd), "-j", "-q")
+        cmd = self._build_cmd("info", "-f", str(target_itag), "--speed", str(spd), "-j", "-q")
         if self.force_guest:
             cmd.append("--guest")
+        cmd.extend(["--", url_or_query])
         out = subprocess.check_output(cmd, text=True, encoding="utf-8")
         return TrackInfo.from_dict(json.loads(out))
 
@@ -180,10 +189,11 @@ class YtdlmClient:
         """Searches YouTube in anonymous Guest mode."""
         if self.server_url:
             params = urllib.parse.urlencode({"q": query, "limit": str(limit)})
-            with urllib.request.urlopen(f"{self.server_url}/search?{params}", timeout=15) as resp:
+            req_url = _validate_http_url(self.server_url) + f"/search?{params}"
+            with urllib.request.urlopen(req_url, timeout=15) as resp:  # nosec B310
                 return json.loads(resp.read().decode("utf-8")).get("results", [])
 
-        cmd = self._build_cmd("search", query, "-n", str(limit), "-j", "-q")
+        cmd = self._build_cmd("search", "-n", str(limit), "-j", "-q", "--", query)
         out = subprocess.check_output(cmd, text=True, encoding="utf-8")
         return json.loads(out)
 
@@ -203,7 +213,6 @@ class YtdlmClient:
         spd = normalize_playback_speed(speed if speed is not None else self.default_speed)
         cmd = self._build_cmd(
             "stream",
-            url_or_query,
             "-f",
             str(target_itag),
             "--start",
@@ -218,6 +227,7 @@ class YtdlmClient:
             cmd.append("--guest")
         if loop:
             cmd.append("--loop")
+        cmd.extend(["--", url_or_query])
 
         return subprocess.Popen(
             cmd,
@@ -267,7 +277,6 @@ class YtdlmClient:
         spd = normalize_playback_speed(speed if speed is not None else self.default_speed)
         cmd = self._build_cmd(
             "download",
-            url_or_query,
             "-f",
             str(target_itag),
             "--speed",
@@ -278,5 +287,6 @@ class YtdlmClient:
         )
         if self.force_guest:
             cmd.append("--guest")
+        cmd.extend(["--", url_or_query])
         subprocess.check_call(cmd)
         return output_path

@@ -147,7 +147,6 @@ impl YtdlmClient {
         let mut cmd = self.base_command();
         cmd.args([
             "info",
-            url_or_query,
             "-f",
             &self.default_itag.to_string(),
             "--speed",
@@ -158,6 +157,7 @@ impl YtdlmClient {
         if self.force_guest {
             cmd.arg("--guest");
         }
+        cmd.args(["--", url_or_query]);
 
         let output = cmd.output().await?;
         if !output.status.success() {
@@ -184,7 +184,6 @@ impl YtdlmClient {
         let spd = normalize_speed(speed);
         cmd.args([
             "stream",
-            url_or_query,
             "-f",
             &self.default_itag.to_string(),
             "--start",
@@ -198,6 +197,7 @@ impl YtdlmClient {
         if self.force_guest {
             cmd.arg("--guest");
         }
+        cmd.args(["--", url_or_query]);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
     }

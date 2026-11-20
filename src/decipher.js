@@ -13,6 +13,263 @@ const nTokenCache = new Map();
 let cachedPlayerState = null;
 let loadingPromise = null;
 
+// Pure-realm browser shims executed inside the VM context so
+// zero host objects or constructors cross the VM boundary.
+const VM_BOOTSTRAP_CODE = [
+  'const __ua = String(globalThis.__ua || "");',
+  'const __w = String(globalThis.__watch || "");',
+  'delete globalThis.__ua;',
+  'delete globalThis.__watch;',
+  'function makeDummy() {',
+  '  const fn = function () {};',
+  '  return new Proxy(fn, {',
+  '    get(t, p) {',
+  '      if (p === "style") return {};',
+  '      if (p === "classList") {',
+  '        return {',
+  '          add() {},',
+  '          remove() {},',
+  '          contains() { return false; },',
+  '        };',
+  '      }',
+  '      if (p === "childNodes" || p === "children") {',
+  '        return [];',
+  '      }',
+  '      if (p === "dataset") return {};',
+  '      if (typeof t[p] !== "undefined") return t[p];',
+  '      return () => makeDummy();',
+  '    },',
+  '    set(t, p, v) { t[p] = v; return true; },',
+  '    apply() { return makeDummy(); },',
+  '    construct() { return makeDummy(); },',
+  '  });',
+  '}',
+  'function SimpleParams(init) {',
+  '  this._m = new Map();',
+  '  const s = String(init || "").replace(/^\\?/, "");',
+  '  if (!s) return;',
+  '  for (const part of s.split("&")) {',
+  '    if (!part) continue;',
+  '    const i = part.indexOf("=");',
+  '    const k = i >= 0 ? part.slice(0, i) : part;',
+  '    const v = i >= 0 ? part.slice(i + 1) : "";',
+  '    try {',
+  '      this._m.set(',
+  '        decodeURIComponent(k),',
+  '        decodeURIComponent(v)',
+  '      );',
+  '    } catch (e) { this._m.set(k, v); }',
+  '  }',
+  '}',
+  'SimpleParams.prototype.get = function (k) {',
+  '  return this._m.has(k) ? this._m.get(k) : null;',
+  '};',
+  'SimpleParams.prototype.set = function (k, v) {',
+  '  this._m.set(String(k), String(v));',
+  '};',
+  'SimpleParams.prototype.has = function (k) {',
+  '  return this._m.has(k);',
+  '};',
+  'SimpleParams.prototype.delete = function (k) {',
+  '  this._m.delete(k);',
+  '};',
+  'SimpleParams.prototype.toString = function () {',
+  '  const out = [];',
+  '  for (const [k, v] of this._m.entries()) {',
+  '    const ek = encodeURIComponent(k);',
+  '    const ev = encodeURIComponent(v);',
+  '    out.push(ek + "=" + ev);',
+  '  }',
+  '  return out.join("&");',
+  '};',
+  'const __urlRe = new RegExp(',
+  '  "^([a-z]+:)//([^/?#]+)([^?#]*)" +',
+  '  "(\\\\?[^#]*)?(#.*)?$", "i"',
+  ');',
+  'function SimpleURL(input) {',
+  '  const raw = String(input || "");',
+  '  const m = raw.match(__urlRe);',
+  '  this.href = raw;',
+  '  this.protocol = m ? m[1] : "https:";',
+  '  this.host = m ? m[2] : "www.youtube.com";',
+  '  this.hostname = this.host.split(":")[0];',
+  '  this.pathname = m ? (m[3] || "/") : "/";',
+  '  this.search = m && m[4] ? m[4] : "";',
+  '  this.hash = m && m[5] ? m[5] : "";',
+  '  this.origin = this.protocol + "//" + this.host;',
+  '  this.searchParams = new SimpleParams(this.search);',
+  '}',
+  'SimpleURL.prototype.toString = function () {',
+  '  const q = this.searchParams.toString();',
+  '  const base = this.origin + this.pathname;',
+  '  return base + (q ? "?" + q : "") + this.hash;',
+  '};',
+  'const __b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" +',
+  '  "abcdefghijklmnopqrstuvwxyz0123456789+/";',
+  'function atobPoly(str) {',
+  '  const s = String(str).replace(/[=\\s]+$/g, "");',
+  '  let out = "";',
+  '  for (let i = 0; i < s.length; i += 4) {',
+  '    const c1 = __b64.indexOf(s[i]);',
+  '    const c2 = __b64.indexOf(s[i + 1]);',
+  '    const c3 = __b64.indexOf(s[i + 2]);',
+  '    const c4 = __b64.indexOf(s[i + 3]);',
+  '    const b1 = (c1 << 18) | (c2 << 12);',
+  '    const b2 = ((c3 & 63) << 6) | (c4 & 63);',
+  '    const n = b1 | b2;',
+  '    out += String.fromCharCode((n >> 16) & 255);',
+  '    if (c3 !== -1) {',
+  '      out += String.fromCharCode((n >> 8) & 255);',
+  '    }',
+  '    if (c4 !== -1) {',
+  '      out += String.fromCharCode(n & 255);',
+  '    }',
+  '  }',
+  '  return out;',
+  '}',
+  'function btoaPoly(str) {',
+  '  const s = String(str);',
+  '  const l = s.length;',
+  '  let out = "";',
+  '  for (let i = 0; i < l; i += 3) {',
+  '    const a = s.charCodeAt(i);',
+  '    const b = i + 1 < l ? s.charCodeAt(i + 1) : NaN;',
+  '    const c = i + 2 < l ? s.charCodeAt(i + 2) : NaN;',
+  '    const i2 = ((a & 3) << 4) | (isNaN(b) ? 0 : b >> 4);',
+  '    const i3 = ((b & 15) << 2) | (isNaN(c) ? 0 : c >> 6);',
+  '    out += __b64[a >> 2] + __b64[i2];',
+  '    out += isNaN(b) ? "=" : __b64[i3];',
+  '    out += isNaN(c) ? "=" : __b64[c & 63];',
+  '  }',
+  '  return out;',
+  '}',
+  'globalThis.window = globalThis;',
+  'globalThis.self = globalThis;',
+  'globalThis._yt_player = {};',
+  'globalThis.yt = {};',
+  'globalThis.ytcfg = {',
+  '  get() { return undefined; },',
+  '  set() {},',
+  '};',
+  'globalThis.location = new SimpleURL(__w);',
+  'globalThis.URL = SimpleURL;',
+  'globalThis.URLSearchParams = SimpleParams;',
+  'globalThis.atob = atobPoly;',
+  'globalThis.btoa = btoaPoly;',
+  'globalThis.navigator = {',
+  '  userAgent: __ua,',
+  '  mediaCapabilities: {},',
+  '};',
+  'globalThis.document = {',
+  '  createElement: () => makeDummy(),',
+  '  createElementNS: () => makeDummy(),',
+  '  getElementsByTagName: () => [],',
+  '  querySelector: () => null,',
+  '  querySelectorAll: () => [],',
+  '  addEventListener() {},',
+  '  removeEventListener() {},',
+  '  documentElement: makeDummy(),',
+  '  body: makeDummy(),',
+  '  head: makeDummy(),',
+  '  cookie: "",',
+  '  location: new SimpleURL(__w),',
+  '};',
+  'globalThis.Element = function () {};',
+  'globalThis.HTMLElement = function () {};',
+  'globalThis.HTMLMediaElement = function () {};',
+  'globalThis.HTMLVideoElement = function () {};',
+  'globalThis.Event = function () {};',
+  'globalThis.CustomEvent = function () {};',
+  'globalThis.Node = function () {};',
+  'globalThis.XMLHttpRequest = function () {};',
+  'globalThis.fetch = () => Promise.resolve();',
+  'globalThis.setTimeout = () => 0;',
+  'globalThis.clearTimeout = () => {};',
+  'globalThis.setInterval = () => 0;',
+  'globalThis.clearInterval = () => {};',
+  'globalThis.requestAnimationFrame = () => 0;',
+  'globalThis.cancelAnimationFrame = () => {};',
+  'globalThis.performance = {',
+  '  now: () => Date.now(),',
+  '  mark() {},',
+  '  measure() {},',
+  '};',
+  'globalThis.screen = { width: 1920, height: 1080 };',
+  'globalThis.matchMedia = () => ({',
+  '  matches: false,',
+  '  addListener() {},',
+  '  addEventListener() {},',
+  '});',
+  'globalThis.CSS = { supports: () => true };',
+  'globalThis.console = {',
+  '  log() {}, warn() {}, error() {}, info() {},',
+  '};',
+  'globalThis.TextEncoder = function () {};',
+  'globalThis.TextEncoder.prototype.encode = function (s) {',
+  '  const u = unescape(encodeURIComponent(String(s)));',
+  '  const a = new Uint8Array(u.length);',
+  '  for (let i = 0; i < u.length; i++) {',
+  '    a[i] = u.charCodeAt(i);',
+  '  }',
+  '  return a;',
+  '};',
+  'globalThis.TextDecoder = function () {};',
+  'globalThis.TextDecoder.prototype.decode = function (a) {',
+  '  let s = "";',
+  '  for (let i = 0; i < a.length; i++) {',
+  '    s += String.fromCharCode(a[i]);',
+  '  }',
+  '  try { return decodeURIComponent(escape(s)); }',
+  '  catch (e) { return s; }',
+  '};',
+  'let __ctor = null;',
+  'let __meth = null;',
+  'globalThis.__decipherN = function (rawUrl, origN) {',
+  '  const ytp = globalThis._yt_player;',
+  '  if (!ytp) return "";',
+  '  const pick = (v) => {',
+  '    if (typeof v !== "string") return "";',
+  '    if (!v.startsWith("https://")) return "";',
+  '    const nn = new SimpleURL(v).searchParams.get("n");',
+  '    return (nn && nn !== origN) ? nn : "";',
+  '  };',
+  '  if (__ctor && __meth) {',
+  '    try {',
+  '      const inst = new __ctor(rawUrl, true);',
+  '      const r = pick(inst[__meth]());',
+  '      if (r) return r;',
+  '    } catch (e) {}',
+  '  }',
+  '  for (const k of Object.keys(ytp)) {',
+  '    const fn = ytp[k];',
+  '    if (typeof fn !== "function" || !fn.prototype) {',
+  '      continue;',
+  '    }',
+  '    const p = fn.prototype;',
+  '    if (typeof p.set !== "function") continue;',
+  '    if (typeof p.get !== "function") continue;',
+  '    try {',
+  '      const inst = new fn(rawUrl, true);',
+  '      for (const mk of Object.getOwnPropertyNames(p)) {',
+  '        if (mk === "constructor") continue;',
+  '        if (typeof inst[mk] !== "function") continue;',
+  '        if (inst[mk].length !== 0) continue;',
+  '        const r = pick(inst[mk]());',
+  '        if (r) {',
+  '          __ctor = fn;',
+  '          __meth = mk;',
+  '          return r;',
+  '        }',
+  '      }',
+  '    } catch (e) {}',
+  '  }',
+  '  return "";',
+  '};',
+].join('\n');
+
+const BOOTSTRAP_SCRIPT = new vm.Script(VM_BOOTSTRAP_CODE);
+const DECIPHER_SCRIPT = new vm.Script('__decipherN(__inUrl, __inN)');
+
 function getCachedNToken(cacheKey) {
   if (!nTokenCache.has(cacheKey)) return null;
   const val = nTokenCache.get(cacheKey);
@@ -36,28 +293,14 @@ function clearDecipherCache() {
   cachedPlayerState = null;
 }
 
-function createDummyDomElement() {
-  const fn = function () {};
-  return new Proxy(fn, {
-    get(target, prop) {
-      if (prop === 'style') return {};
-      if (prop === 'classList') return { add() {}, remove() {}, contains() { return false; } };
-      if (prop === 'childNodes' || prop === 'children') return [];
-      if (prop === 'dataset') return {};
-      if (typeof target[prop] !== 'undefined') return target[prop];
-      return () => createDummyDomElement();
-    },
-    set(target, prop, val) {
-      target[prop] = val;
-      return true;
-    },
-    apply() {
-      return createDummyDomElement();
-    },
-    construct() {
-      return createDummyDomElement();
-    },
+function createIsolatedVmContext() {
+  const ctx = vm.createContext(Object.create(null), {
+    codeGeneration: { strings: false, wasm: false },
   });
+  ctx.__ua = WEB_USER_AGENT;
+  ctx.__watch = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+  BOOTSTRAP_SCRIPT.runInContext(ctx, { timeout: 2000 });
+  return ctx;
 }
 
 async function getPlayerContext(forceRefresh = false) {
@@ -99,118 +342,15 @@ async function getPlayerContext(forceRefresh = false) {
     const stsMatch = baseJs.match(/signatureTimestamp\s*:\s*(\d+)/);
     const sts = stsMatch ? Number(stsMatch[1]) : 20732;
 
-    const watchUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
-    const sandbox = {
-      window: null,
-      self: null,
-      globalThis: null,
-      _yt_player: {},
-      yt: {},
-      ytcfg: { get: () => undefined, set: () => {} },
-      location: new URL(watchUrl),
-      navigator: {
-        userAgent: WEB_USER_AGENT,
-        mediaCapabilities: {},
-      },
-      document: {
-        createElement: () => createDummyDomElement(),
-        createElementNS: () => createDummyDomElement(),
-        getElementsByTagName: () => [],
-        querySelector: () => null,
-        querySelectorAll: () => [],
-        addEventListener: () => {},
-        removeEventListener: () => {},
-        documentElement: createDummyDomElement(),
-        body: createDummyDomElement(),
-        head: createDummyDomElement(),
-        cookie: '',
-        location: new URL(watchUrl),
-      },
-      Element: function () {},
-      HTMLElement: function () {},
-      HTMLMediaElement: function () {},
-      HTMLVideoElement: function () {},
-      Event: function () {},
-      CustomEvent: function () {},
-      Node: function () {},
-      XMLHttpRequest: function () {},
-      fetch: () => Promise.resolve(),
-      setTimeout: () => 0,
-      clearTimeout: () => {},
-      setInterval: () => 0,
-      clearInterval: () => {},
-      requestAnimationFrame: () => 0,
-      cancelAnimationFrame: () => {},
-      performance: { now: () => Date.now(), mark: () => {}, measure: () => {} },
-      screen: { width: 1920, height: 1080 },
-      matchMedia: () => ({ matches: false, addListener: () => {}, addEventListener: () => {} }),
-      CSS: { supports: () => true },
-      URL,
-      URLSearchParams,
-      TextEncoder,
-      TextDecoder,
-      Uint8Array,
-      ArrayBuffer,
-      DataView,
-      Int32Array,
-      Float64Array,
-      Map,
-      Set,
-      WeakMap,
-      WeakSet,
-      Promise,
-      Symbol,
-      Proxy,
-      Reflect,
-      JSON,
-      Math,
-      Date,
-      RegExp,
-      Error,
-      TypeError,
-      RangeError,
-      SyntaxError,
-      URIError,
-      Object,
-      Array,
-      String,
-      Number,
-      Boolean,
-      // Note: Host Function is intentionally omitted to prevent sandbox escape
-      BigInt,
-      parseInt,
-      parseFloat,
-      isNaN,
-      isFinite,
-      encodeURIComponent,
-      decodeURIComponent,
-      encodeURI,
-      decodeURI,
-      escape,
-      unescape,
-      atob: s => Buffer.from(s, 'base64').toString('binary'),
-      btoa: s => Buffer.from(s, 'binary').toString('base64'),
-      console: { log() {}, warn() {}, error() {}, info() {} },
-    };
-    sandbox.window = sandbox;
-    sandbox.self = sandbox;
-    sandbox.globalThis = sandbox;
-    sandbox.Element.prototype = {};
-    sandbox.HTMLElement.prototype = {};
-    sandbox.HTMLMediaElement.prototype = {};
-    sandbox.HTMLVideoElement.prototype = {};
-
-    vm.createContext(sandbox);
+    const ctx = createIsolatedVmContext();
     try {
-      vm.runInContext(baseJs, sandbox, { timeout: 6000 });
+      vm.runInContext(baseJs, ctx, { timeout: 6000 });
     } catch (e) {}
 
     cachedPlayerState = {
-      ytp: sandbox._yt_player,
+      ctx,
       sts,
       playerHash,
-      cachedCtor: null,
-      cachedMethod: null,
       ts: Date.now(),
     };
     return cachedPlayerState;
@@ -226,8 +366,8 @@ async function getPlayerContext(forceRefresh = false) {
 async function decipherSabrUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
   const state = await getPlayerContext(false);
-  const ytp = state?.ytp;
-  if (!ytp) return rawUrl;
+  const ctx = state?.ctx;
+  if (!ctx) return rawUrl;
 
   try {
     const parsedUrl = new URL(rawUrl);
@@ -241,45 +381,23 @@ async function decipherSabrUrl(rawUrl) {
       return parsedUrl.toString();
     }
 
-    const extractValidResult = v => {
-      if (typeof v !== 'string' || !v.startsWith('https://')) return null;
-      const newN = new URL(v).searchParams.get('n');
-      if (newN && newN !== origN) {
-        setCachedNToken(cacheKey, newN);
-        return v;
+    ctx.__inUrl = String(rawUrl);
+    ctx.__inN = String(origN);
+    let newN = '';
+    try {
+      const out = DECIPHER_SCRIPT.runInContext(ctx, { timeout: 2000 });
+      if (typeof out === 'string' && out.length > 0 && out.length < 256) {
+        newN = out;
       }
-      return null;
-    };
-
-    if (state.cachedCtor && state.cachedMethod) {
-      try {
-        const inst = new state.cachedCtor(rawUrl, true);
-        const hit = extractValidResult(inst[state.cachedMethod]());
-        if (hit) return hit;
-      } catch (e) {}
+    } finally {
+      ctx.__inUrl = '';
+      ctx.__inN = '';
     }
 
-    for (const [, fn] of Object.entries(ytp)) {
-      if (
-        typeof fn === 'function' &&
-        fn.prototype &&
-        typeof fn.prototype.set === 'function' &&
-        typeof fn.prototype.get === 'function'
-      ) {
-        try {
-          const inst = new fn(rawUrl, true);
-          for (const mk of Object.getOwnPropertyNames(fn.prototype)) {
-            if (mk !== 'constructor' && typeof inst[mk] === 'function' && inst[mk].length === 0) {
-              const hit = extractValidResult(inst[mk]());
-              if (hit) {
-                state.cachedCtor = fn;
-                state.cachedMethod = mk;
-                return hit;
-              }
-            }
-          }
-        } catch (e) {}
-      }
+    if (newN && newN !== origN) {
+      setCachedNToken(cacheKey, newN);
+      parsedUrl.searchParams.set('n', newN);
+      return parsedUrl.toString();
     }
   } catch (e) {}
 
@@ -287,6 +405,7 @@ async function decipherSabrUrl(rawUrl) {
 }
 
 module.exports = {
+  createIsolatedVmContext,
   getPlayerContext,
   decipherSabrUrl,
   clearDecipherCache,

@@ -176,8 +176,14 @@ function loadStoredAuth() {
 
 function saveStoredAuth(tokenObj) {
   try {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    fs.writeFileSync(AUTH_FILE, JSON.stringify(tokenObj, null, 2), 'utf8');
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(AUTH_FILE, JSON.stringify(tokenObj, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    try {
+      fs.chmodSync(AUTH_FILE, 0o600);
+    } catch (e) {}
   } catch (e) {}
 }
 
@@ -191,6 +197,7 @@ async function requestTvDeviceCode() {
   const res = await fetch('https://www.youtube.com/o/oauth2/device/code', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
       client_id: TV_OAUTH.clientId,
       scope: TV_OAUTH.scope,
@@ -209,6 +216,7 @@ async function pollTvDeviceToken(deviceCode, intervalSec = 5, maxWaitSec = 300) 
     const res = await fetch('https://www.youtube.com/o/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(15000),
       body: JSON.stringify({
         client_id: TV_OAUTH.clientId,
         client_secret: TV_OAUTH.clientSecret,
@@ -248,6 +256,7 @@ async function getValidTvAccessToken(explicitToken = null) {
     const res = await fetch('https://www.youtube.com/o/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(15000),
       body: JSON.stringify({
         client_id: TV_OAUTH.clientId,
         client_secret: TV_OAUTH.clientSecret,
